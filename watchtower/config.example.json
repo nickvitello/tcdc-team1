@@ -1,0 +1,15 @@
+{
+  "team_x": 1,
+  "webhook": "",
+  "_webhook_note": "paste a Discord channel webhook URL to get DOWN/UP alerts; leave empty to disable",
+  "targets": [
+    {"name":"ns1-dns","host":"10.101.10.53","type":"dns","port":53,"query":"CHANGEME.local"},
+    {"name":"ipcam-http","host":"10.150.0.1","type":"http","port":80,"path":"/","expect":""},
+    {"name":"ftp-archive","host":"10.101.10.21","type":"ftp","port":21,"cred":"ftp-archive"},
+    {"name":"artifactorium","host":"10.101.10.80","type":"http","port":80,"path":"/","expect":""},
+    {"name":"ssh-wkstn","host":"10.101.10.22","type":"ssh","port":22},
+    {"name":"ad-dc","host":"10.101.20.88","type":"ldap","port":389},
+    {"name":"mqtt","host":"10.101.30.49","type":"mqtt","port":1883},
+    {"name":"opnsense-fw","host":"10.101.40.1","type":"tcp","port":443,"scored":false}
+  ]
+}

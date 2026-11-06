@@ -1,0 +1,8 @@
+{
+  "services": {
+    "ftp-archive": {"user": "anonymous", "pass": "anon@tcdc"}
+  },
+  "passwords": [
+    {"box":"EXAMPLE","user":"washington","pass":"set-this","changed":"2026-11-07 08:05","synced":true}
+  ]
+}

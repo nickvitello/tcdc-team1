@@ -1,0 +1,12 @@
+# NEVER commit secrets — passwords live locally only (R23 lets us RECORD them, not publish)
+*.vault.json
+vault.json
+creds*
+secrets*
+*.pem
+*.key
+__pycache__/
+*.pyc
+.DS_Store
+config.json
+.claude/
