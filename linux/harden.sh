@@ -67,6 +67,9 @@ if [ -f "$SSHD" ]; then
   set_sshd MaxAuthTries 4
   if sshd -t 2>>"$LOG"; then
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null; log "    sshd reloaded OK"
+    # re-baseline the file WE just changed, so the watcher never flags our own hardening
+    grep -v ' /etc/ssh/sshd_config$' "$BK/baseline.sha256" > "$BK/.b.tmp" 2>/dev/null && mv "$BK/.b.tmp" "$BK/baseline.sha256"
+    sha256sum "$SSHD" >> "$BK/baseline.sha256"
   else
     log "    !! sshd -t FAILED, reverting"; cp -a "$BK/sshd_config.$TS" "$SSHD"
   fi
