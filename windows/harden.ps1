@@ -22,8 +22,8 @@ $runKeys = @(
   "HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
   "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 )
-foreach($k in $runKeys){ if(Test-Path $k){ Get-Item $k | Select-Object -ExpandProperty Property |
-  ForEach-Object { "$k :: $_ = $((Get-ItemProperty $k).$_)" } } } | Out-File "$BK\runkeys.base.txt"
+$(foreach($k in $runKeys){ if(Test-Path $k){ Get-Item $k | Select-Object -ExpandProperty Property |
+  ForEach-Object { "$k :: $_ = $((Get-ItemProperty $k).$_)" } } }) | Out-File "$BK\runkeys.base.txt"
 Log "    baselined admins/services/schtasks/runkeys"
 
 # 2. Report local admins (backdoor accounts)
@@ -63,7 +63,7 @@ $agent = Join-Path $selfDir "watch-agent.ps1"
 if(Test-Path $agent){
   Copy-Item $agent "$BK\watch-agent.ps1" -Force
   $act = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ep bypass -File `"$BK\watch-agent.ps1`" -Box $Box"
-  $trg = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)
+  $trg = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration ([TimeSpan]::MaxValue)
   Register-ScheduledTask -TaskName "TCDC-Watch" -Action $act -Trigger $trg -RunLevel Highest -Force -User "SYSTEM" | Out-Null
   Log "    TCDC-Watch task registered (2 min)"
 } else { Log "    !! watch-agent.ps1 not found alongside; copy manually" }

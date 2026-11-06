@@ -24,7 +24,7 @@ Log "[2] SPN accounts (kerberoastable):"
 Get-ADUser -Filter 'ServicePrincipalName -like "*"' -Properties ServicePrincipalName |
   ForEach-Object { Log ("    " + $_.SamAccountName) }
 Log "[2b] DONT_REQ_PREAUTH (AS-REP roastable):"
-Get-ADUser -Filter 'useraccountcontrol -band 4194304' -Properties useraccountcontrol |
+Get-ADUser -LDAPFilter '(userAccountControl:1.2.840.113556.1.4.803:=4194304)' |
   ForEach-Object { Log ("    " + $_.SamAccountName) }
 
 # 3. Stale/suspicious: enabled accounts w/ pwd-never-expires, adminCount=1 not in known groups
