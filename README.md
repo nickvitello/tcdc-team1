@@ -4,8 +4,8 @@ Defensive tooling for TCDC SMC F26 (attack/defense, Sat Nov 7 2026). Public per 
 All tools are plain scripts — **no AI, no network callbacks to us** (R21/R23 compliant).
 Scoring is 80% uptime + 20% injects, so everything here serves **keep-services-up + catch-persistence**.
 
-> **Setup once:** replace `GH_USER` everywhere with the real GitHub owner:
-> `grep -rl GH_USER . | xargs sed -i '' 's/GH_USER/youruser/g'` (macOS) then push.
+> **Setup once:** replace `nickvitello` everywhere with the real GitHub owner:
+> `grep -rl nickvitello . | xargs sed -i '' 's/nickvitello/youruser/g'` (macOS) then push.
 
 ## What's here
 | tool | runs where | does |
@@ -22,32 +22,32 @@ Scoring is 80% uptime + 20% injects, so everything here serves **keep-services-u
 
 ### Nick — Ops (laptop, over VPN)
 ```
-git clone https://github.com/GH_USER/tcdc-team1 && cd tcdc-team1/watchtower
+git clone https://github.com/nickvitello/tcdc-team1 && cd tcdc-team1/watchtower
 cp config.example.json config.json   # edit: set webhook + dns query name
 python3 monitor.py                    # open http://127.0.0.1:8787
 ```
 
 ### Linux-A — ssh-workstation + artifactorium
 ```
-curl -sSL https://raw.githubusercontent.com/GH_USER/tcdc-team1/main/boot.sh | sudo bash -s ssh-workstation
-curl -sSL https://raw.githubusercontent.com/GH_USER/tcdc-team1/main/boot.sh | sudo bash -s artifactorium
+curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s ssh-workstation
+curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s artifactorium
 ```
 
 ### Linux-B — ns1 (DNS) + ftp-archive
 ```
-curl -sSL https://raw.githubusercontent.com/GH_USER/tcdc-team1/main/boot.sh | sudo bash -s ns1
-curl -sSL https://raw.githubusercontent.com/GH_USER/tcdc-team1/main/boot.sh | sudo bash -s ftp-archive
+curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s ns1
+curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s ftp-archive
 ```
 
 ### Network/cloud — opnsense (follow firewall-opnsense.md) + ipcam
 ```
-curl -sSL https://raw.githubusercontent.com/GH_USER/tcdc-team1/main/boot.sh | sudo bash -s ipcam
+curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s ipcam
 ```
 
 ### Windows lead — AD DC + MQTT (run in an Admin PowerShell)
 ```
 # MQTT (Win11):
-iex (irm https://raw.githubusercontent.com/GH_USER/tcdc-team1/main/boot.ps1)
+iex (irm https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.ps1)
 # AD DC (Win2025): run boot.ps1, then audit, then apply:
 powershell -ep bypass -File $env:TEMP\tcdc\ad-harden.ps1          # report
 powershell -ep bypass -File $env:TEMP\tcdc\ad-harden.ps1 -Apply   # safe changes

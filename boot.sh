@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # TCDC Team 1 Linux bootstrap.
-# Usage: curl -sSL https://raw.githubusercontent.com/GH_USER/tcdc-team1/main/boot.sh | sudo bash -s <boxname>
+# Usage: curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s <boxname>
 set -uo pipefail
 BOX="${1:-$(hostname)}"
-RAW="https://raw.githubusercontent.com/GH_USER/tcdc-team1/main/linux"
+RAW="https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/linux"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 echo "[boot] box=$BOX  fetching modules..."
 for f in harden.sh watch-agent.sh; do

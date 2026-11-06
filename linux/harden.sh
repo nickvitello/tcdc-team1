@@ -78,7 +78,7 @@ SELFDIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 if [ -f "$SELFDIR/watch-agent.sh" ]; then
   install -m750 "$SELFDIR/watch-agent.sh" /usr/local/sbin/tcdc-watch
 else
-  curl -fsSL "https://raw.githubusercontent.com/GH_USER/tcdc-team1/main/linux/watch-agent.sh" \
+  curl -fsSL "https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/linux/watch-agent.sh" \
     -o /usr/local/sbin/tcdc-watch 2>/dev/null && chmod 750 /usr/local/sbin/tcdc-watch
 fi
 if [ -x /usr/local/sbin/tcdc-watch ]; then
