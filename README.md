@@ -23,7 +23,7 @@ Scoring is 80% uptime + 20% injects, so everything here serves **keep-services-u
 ### Nick — Ops (laptop, over VPN)
 ```
 git clone https://github.com/nickvitello/tcdc-team1 && cd tcdc-team1/watchtower
-cp config.example.json config.json   # edit: set webhook + dns query name
+cp config.example.json config.json   # edit: set dns query name (webhook optional; see R23 note)
 python3 monitor.py                    # open http://127.0.0.1:8787
 ```
 
@@ -68,11 +68,11 @@ Watchtower's vault tab flags anything NOT synced in red.
 Both watch-agents re-check their baseline on a timer (Linux 60s, Windows 2min) and alert on:
 new authorized_keys, new UID0 user, new/changed services, new systemd timers / scheduled tasks,
 new Run-key autoruns, and listeners on common C2 ports (4444/5555/9001/1337/31337) — the
-Metasploit/Sliver footprint. Set `TCDC_WEBHOOK` in the unit/env to fan alerts to Discord.
+Metasploit/Sliver footprint. Alerts go to a LOCAL log (`/root/tcdc-baseline/drift.log`, `C:\tcdc-baseline\drift.log`). A `TCDC_WEBHOOK` hook exists but is OFF and NOT recommended: enabling it exports host-derived data (paths, account/service names, listeners) off-box, which R23 does not exempt. Do not enable without explicit staff approval.
 
 ## Rules compliance
 - Scoped to our 8 boxes only (R6). No attacks on competition infra / test box (R7/R9).
-- No DoS/ARP spoof (R19). No data exfil — tools report locally only (R23).
+- No DoS/ARP spoof (R19). Tools report to a LOCAL log only; off-box webhook OFF by default (R23).
 - Tested in good faith pre-event on local VMs (R24). Free + public (R20). No AI at runtime (R21).
 
 ## Submit before Sat 08:00

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # TCDC drift watch-agent. Run by systemd timer every 60s. Compares live state to baseline.
-# Reports drift to local log + optional Discord webhook (set TCDC_WEBHOOK env in the unit).
+# Reports drift to LOCAL log ($BK/drift.log).
+#
+# R23 NOTE: TCDC_WEBHOOK is OFF by default. Enabling it exports host-derived data
+# (file paths, account/service names, listeners) off-box to Discord. R23 only exempts
+# screenshots and passwords from its export prohibition — these payloads are neither.
+# Do NOT enable the webhook without explicit staff approval. Local log is the default.
 set -uo pipefail
 BOX="${1:-unknown}"
 BK="/root/tcdc-baseline"
@@ -14,12 +19,23 @@ alert(){
     -d "{\"content\":\"$(echo "$m" | sed 's/"/\\"/g')\"}" "$WEBHOOK" >/dev/null 2>&1 || true
 }
 
-# 1. file hash drift vs baseline
+# 1. file hash drift vs baseline (now includes sudoers.d + cron dirs + units)
 while read -r want path; do
+  [ -z "$path" ] && continue
   [ -e "$path" ] || { alert "file GONE $path"; continue; }
   have="$(sha256sum "$path" 2>/dev/null | awk '{print $1}')"
   [ "$have" = "$want" ] || alert "file CHANGED $path"
 done < "$BK/baseline.sha256"
+
+# 1b. NEW files in cron/sudoers/systemd dirs since baseline (review #8 - new-file persistence)
+if [ -f "$BK/inventory.base" ]; then
+  find /etc/sudoers.d /etc/cron.d /etc/cron.hourly /etc/cron.daily \
+       /etc/cron.weekly /etc/cron.monthly /var/spool/cron /etc/systemd/system \
+       -type f 2>/dev/null | sort -u > "$BK/.inv.now"
+  grep -vxF -f "$BK/inventory.base" "$BK/.inv.now" 2>/dev/null \
+    | grep -v 'tcdc-watch' \
+    | while read -r p; do [ -n "$p" ] && alert "NEW persistence file: $p"; done
+fi
 
 # 2. new enabled services since baseline (Metasploit/Sliver persistence)
 if [ -f "$BK/enabled-services.txt" ]; then
@@ -48,7 +64,7 @@ getent passwd | awk -F: '$3>=0{print $6}' | sort -u | while read -r home; do
   fi
 done
 
-# 6. suspicious outbound-ish listeners on odd high ports (meterpreter/sliver beacons often bind/connect 4444/8080/443-alt)
+# 6. suspicious listeners on odd high ports (meterpreter/sliver beacons: 4444/5555/8081/9001/1337/31337)
 (ss -tlpnH 2>/dev/null || netstat -tlpn 2>/dev/null) \
   | grep -E ':(4444|5555|8081|9001|1337|31337)\b' \
   | while read -r l; do alert "suspicious listener: $l"; done

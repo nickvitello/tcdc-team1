@@ -12,7 +12,11 @@ NOT scored, but it gates every scored box. Do NOT lock yourself (or the checker)
 - Keep scored service ports reachable from the checker subnet. Do NOT blanket-deny.
 - Block OUTBOUND to known C2 ports from server VLANs (4444,5555,8081,9001,1337,31337) — R18 lets
   you block, but each rule names one dest+port; log hits.
-- Deny inbound to mgmt (SSH/GUI) except from jumpbox 10.99.1.2.
+- Mgmt (SSH/GUI): compliant option is to deny inbound mgmt from ALL outside sources. R18 requires
+  outside-subnet incoming blocks to apply to every source, so reach the GUI through the jumpbox-hosted
+  Chromium/Remmina sessions (an allowed access path), NOT a firewall source-exemption. A source-based
+  allow for 10.99.1.2 is selective policy that R18's internal-subnet exception does not clearly cover;
+  do NOT deploy it as compliant without an explicit staff ruling first.
 - Leave ICMP to the test box alone; never touch competition infra (R7/R9).
 
 ## Trap

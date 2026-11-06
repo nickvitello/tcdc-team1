@@ -2,45 +2,78 @@
 """TCDC password vault CLI. ONE funnel for every password change so the
 /team/passwords dashboard never drifts (drift = lost uptime: scored checks use these creds).
 
-  python3 vault.py set <box> <user> <newpass> [--win] [--ad]   record + print box command
-  python3 vault.py sync <box> <user>                           mark dashboard-synced after you update it
+  python3 vault.py set <box> <user> <newpass> [--win] [--ad]   record + print SAFE box command
+  python3 vault.py sync <box> <user>                           mark dashboard-synced (manual attestation)
   python3 vault.py svc <name> <user> <pass>                    store a SERVICE cred (monitor uses these)
   python3 vault.py list                                        show table
 
-Stored in vault.json (gitignored). Never commit it.
+The printed reset commands PROMPT for the password on the box (interactive) - the
+secret is never placed on a command line, so it can't land in shell history or be
+mangled by shell metacharacters. You type the SAME value you recorded here.
+
+Stored in vault.json (gitignored, mode 0600). Never commit it.
 """
-import json, os, sys, time
+import json, os, sys, time, tempfile, shlex
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 VP = os.path.join(HERE, "vault.json")
 
 def load():
-    try: return json.load(open(VP))
-    except Exception: return {"services": {}, "passwords": []}
-def save(v): json.dump(v, open(VP, "w"), indent=2)
+    try:
+        if os.path.exists(VP):
+            try: os.chmod(VP, 0o600)   # enforce private perms on existing file (review #12)
+            except OSError: pass
+        return json.load(open(VP))
+    except Exception:
+        return {"services": {}, "passwords": []}
+
+def save(v):
+    # atomic write with 0600 so readers never see a partial file and other local
+    # users can't read creds (review #5 atomicity + #12 perms)
+    fd, tmp = tempfile.mkstemp(dir=HERE, prefix=".vault.", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(v, f, indent=2)
+        os.replace(tmp, VP)
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+
 def now(): return time.strftime("%Y-%m-%d %H:%M")
 
+def _reject_bad(pw):
+    if "\n" in pw or "\r" in pw or "\x00" in pw:
+        print("REFUSED: password contains newline/NUL - not a valid credential."); sys.exit(2)
+
 def cmd_set(box, user, pw, win, ad):
+    _reject_bad(pw)
     v = load()
     v["passwords"] = [p for p in v["passwords"] if not (p["box"] == box and p["user"] == user)]
     v["passwords"].append({"box": box, "user": user, "pass": pw, "changed": now(), "synced": False})
     save(v)
+    qu = shlex.quote(user)
     print("recorded %s/%s (synced=False)" % (box, user))
-    print("\nRUN THIS ON THE BOX:")
+    print("\nRUN THIS ON THE BOX - it PROMPTS for the new password (type the value above):")
     if ad:
-        print('  Set-ADAccountPassword -Identity %s -Reset -NewPassword (ConvertTo-SecureString "%s" -AsPlainText -Force)' % (user, pw))
+        print('  $p = Read-Host -AsSecureString "New password for %s"' % user)
+        print('  Set-ADAccountPassword -Identity %s -Reset -NewPassword $p' % user)
+        print('  Set-ADUser -Identity %s -ChangePasswordAtLogon $false' % user)
     elif win:
-        print('  net user %s "%s"' % (user, pw))
+        print('  net user %s *' % user)   # '*' = interactive prompt, no secret on cmdline
     else:
-        print("  echo '%s:%s' | sudo chpasswd" % (user, pw))
+        print("  sudo passwd %s" % qu)     # interactive; no secret on cmdline or in history
     print("\nTHEN: update /team/passwords on the dashboard, then: python3 vault.py sync %s %s" % (box, user))
 
 def cmd_sync(box, user):
     v = load(); hit = False
     for p in v["passwords"]:
         if p["box"] == box and p["user"] == user: p["synced"] = True; hit = True
-    save(v); print("synced %s/%s" % (box, user) if hit else "no such entry")
+    save(v); print(("synced %s/%s (manual attestation - does NOT verify scorer)" % (box, user)) if hit else "no such entry")
 
 def cmd_svc(name, user, pw):
+    _reject_bad(pw)
     v = load(); v.setdefault("services", {})[name] = {"user": user, "pass": pw}
     save(v); print("service cred stored: %s (%s)" % (name, user))
 
