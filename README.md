@@ -57,6 +57,17 @@ powershell -ep bypass -File C:\tcdc-baseline\ad-harden.ps1 -Apply   # safe chang
 > not turn the firewall on. After confirming the scored service still answers, enable it:
 > `harden.ps1 -Box mqtt -ScoredPorts 1883 -EnableFirewall` (add `-EnableDefaultDeny` only once validated).
 
+## Account census (catch a rogue admin planted BEFORE you harden)
+Baseline accepts whatever accounts exist at capture time. Our topology has **5 admins + 10 regular
+users** per box — pass those so harden warns if the counts are already wrong (a 6th admin already
+present would otherwise be blessed as legit):
+```
+sudo bash harden.sh <box> --expect-admins 5 --expect-users 10          # linux
+powershell -ep bypass -File harden.ps1 -Box <box> -ExpectedAdmins 5 -ExpectedUsers 10   # windows
+powershell -ep bypass -File ad-harden.ps1 -ExpectedDomainAdmins 5      # DC (Domain Admins)
+```
+WARN only — never deletes (R8). Adjust the numbers if a box's legit count differs.
+
 ## Password rule (read twice — this is where teams lose uptime)
 NEVER change a password by hand. Always:
 ```

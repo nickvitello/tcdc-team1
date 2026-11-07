@@ -1,5 +1,8 @@
 # TCDC Team 1 - Windows hardening (AD 2025 / Win11 MQTT). Idempotent. Run as Administrator.
-# Usage: powershell -ep bypass -File harden.ps1 -Box mqtt [-ScoredPorts 1883] [-EnableDefaultDeny] [-Rebaseline]
+# Usage: powershell -ep bypass -File harden.ps1 -Box mqtt [-ScoredPorts 1883] [-EnableDefaultDeny]
+#        [-Rebaseline] [-ExpectedAdmins 5] [-ExpectedUsers 10]
+#   -ExpectedAdmins/-ExpectedUsers: WARN at baseline if local-admin / enabled-user counts differ
+#   (catches a rogue account present before baseline). Report-only, never deletes users (R8).
 # Does NOT change passwords (funnel those through the vault to keep /team/passwords in sync).
 # Does NOT delete users/accounts (R8). Reports + baselines; surgical changes only.
 #
@@ -16,7 +19,9 @@ param(
   [int[]]$MgmtPorts = @(3389,5985,445,135),
   [switch]$EnableFirewall,
   [switch]$EnableDefaultDeny,
-  [switch]$Rebaseline
+  [switch]$Rebaseline,
+  [int]$ExpectedAdmins = -1,   # -1 = skip. WARN at baseline if local Administrators count differs.
+  [int]$ExpectedUsers  = -1    # -1 = skip. WARN at baseline if enabled local-user count differs.
 )
 $ErrorActionPreference = "Continue"
 $BK = "C:\tcdc-baseline"; New-Item -ItemType Directory -Force -Path $BK | Out-Null
@@ -88,6 +93,12 @@ if($firstRun -or $Rebaseline -or $oldFormat){
   Snap-RunKeys "$BK\runkeys.base.txt"
   Set-Content $fmtFile $BASELINE_FMT
   Log "    baselined admins/services(+path+acct+startmode)/schtasks(+all actions)/runkeys(all hives) fmt=v$BASELINE_FMT"
+  # expected-count sanity: catch a rogue admin/user ALREADY present before this baseline blesses it
+  $adminCount = @(Get-AdminMembers).Count
+  $userCount  = @(Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.Enabled }).Count
+  Log "    account census: local admins=$adminCount, enabled local users=$userCount"
+  if($ExpectedAdmins -ge 0 -and $adminCount -ne $ExpectedAdmins){ Log "    !! ADMIN COUNT MISMATCH: expected $ExpectedAdmins, found $adminCount - possible pre-existing rogue admin. REVIEW before trusting baseline." }
+  if($ExpectedUsers  -ge 0 -and $userCount  -ne $ExpectedUsers ){ Log "    !! USER COUNT MISMATCH: expected $ExpectedUsers, found $userCount - review local accounts." }
 } else {
   Log "[1] baseline EXISTS -> forensic snapshot only ($ts). Pass -Rebaseline to replace accepted baseline."
   try { Get-AdminMembers |

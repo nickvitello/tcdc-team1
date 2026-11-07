@@ -1,7 +1,9 @@
 # TCDC Team 1 - Active Directory hardening (Win Server 2025 DC). Run as Domain Admin on the DC.
 # SURGICAL: never touches krbtgt, never disables service/computer accounts, never deletes users (R8).
 # Reports + light safe changes only. Password rotation is MANUAL via the vault.
-param([switch]$Apply,[switch]$Rebaseline)   # default = report only. -Apply does the safe changes.
+param([switch]$Apply,[switch]$Rebaseline,[int]$ExpectedDomainAdmins = -1)   # -1 = skip count check
+# default = report only. -Apply does the safe changes. -ExpectedDomainAdmins N warns if Domain
+# Admins count differs (catches a pre-existing rogue DA before the baseline blesses it).
 # review #9: group baselines are captured ONCE (first run). Re-runs REPORT drift against the
 # accepted baseline instead of overwriting it - otherwise running the audit after a malicious
 # membership change would reset the reference the watcher compares against. -Rebaseline to accept.
@@ -17,6 +19,9 @@ Log "=== AD harden (Apply=$Apply) ==="
 foreach($g in "Domain Admins","Enterprise Admins","Administrators","Schema Admins","Account Operators"){
   try {
     $m = Get-ADGroupMember $g -ErrorAction Stop | Select-Object -Expand SamAccountName
+    if($g -eq 'Domain Admins' -and $ExpectedDomainAdmins -ge 0 -and @($m).Count -ne $ExpectedDomainAdmins){
+      Log "[grp] !! DOMAIN ADMINS COUNT MISMATCH: expected $ExpectedDomainAdmins, found $(@($m).Count) - possible pre-existing rogue DA. REVIEW."
+    }
     $bf = "$BK\grp.$($g -replace ' ','_').base.txt"
     if((Test-Path $bf) -and -not $Rebaseline){
       $base = Get-Content $bf

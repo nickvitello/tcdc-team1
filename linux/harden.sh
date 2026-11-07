@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # TCDC Team 1 — Linux hardening. Idempotent. Safe to re-run.
-# Usage: sudo bash harden.sh <boxname> [--rebaseline]
+# Usage: sudo bash harden.sh <boxname> [--rebaseline] [--expect-admins N] [--expect-users N]
+#   --expect-admins/-users: WARN at baseline if sudo+wheel / login-user counts differ from N
+#   (catches a rogue account already present before baseline). Report-only, never deletes (R8).
 # Does NOT change passwords itself (that goes through the vault so the
 # /team/passwords dashboard stays in sync). Does NOT delete protected users (R8).
 #
@@ -9,8 +11,17 @@
 # "clean" reference). They take a timestamped forensic snapshot instead. To
 # deliberately accept current state as the new baseline, pass --rebaseline.
 set -uo pipefail
-BOX="${1:-unknown}"
-REBASELINE=0; [ "${2:-}" = "--rebaseline" ] && REBASELINE=1
+BOX="${1:-unknown}"; [ $# -gt 0 ] && shift
+# flags: --rebaseline, --expect-admins N (sudo+wheel members), --expect-users N (uid>=1000 login)
+REBASELINE=0; EXPECT_ADMINS=""; EXPECT_USERS=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rebaseline)    REBASELINE=1 ;;
+    --expect-admins) shift; EXPECT_ADMINS="${1:-}" ;;
+    --expect-users)  shift; EXPECT_USERS="${1:-}" ;;
+  esac
+  shift
+done
 TS="$(date +%Y%m%d-%H%M%S)"
 BK="/root/tcdc-baseline"
 LOG="$BK/harden-$TS.log"
@@ -55,6 +66,24 @@ bless_own_units(){
   sort -u "$INV" -o "$INV" 2>/dev/null || true
 }
 
+# account census + expected-count sanity check (catches a rogue admin/user ALREADY present
+# at hardening time, before the baseline blesses it). admins = sudo+wheel members (unique);
+# regular users = uid>=1000 with a real login shell. WARN only; never deletes (R8).
+account_census(){
+  local admins na nu
+  admins="$( { getent group sudo; getent group wheel; } 2>/dev/null | awk -F: '{print $4}' | tr ',' '\n' | sed '/^[[:space:]]*$/d' | sort -u )"
+  na=$(printf '%s\n' "$admins" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+  nu=$(getent passwd | awk -F: '$3>=1000 && $7!~/(nologin|false|sync)$/{c++} END{print c+0}')
+  log "[1c] account census: admins(sudo+wheel)=$na  regular-users(uid>=1000,login)=$nu"
+  printf '%s\n' "$admins" | sed '/^[[:space:]]*$/d' | sed 's/^/        admin: /' | tee -a "$LOG" >/dev/null
+  if [ -n "$EXPECT_ADMINS" ] && [ "$na" != "$EXPECT_ADMINS" ]; then
+    log "    !! ADMIN COUNT MISMATCH: expected $EXPECT_ADMINS, found $na - possible pre-existing rogue admin. REVIEW sudo/wheel before trusting baseline."
+  fi
+  if [ -n "$EXPECT_USERS" ] && [ "$nu" != "$EXPECT_USERS" ]; then
+    log "    !! USER COUNT MISMATCH: expected $EXPECT_USERS, found $nu - review /etc/passwd for added accounts."
+  fi
+}
+
 # 1. Baseline snapshot (drift detection source of truth)
 if [ -s "$BK/baseline.sha256" ] && [ "$REBASELINE" -eq 0 ]; then
   log "[1] baseline EXISTS -> keeping accepted baseline (re-run with --rebaseline to replace)"
@@ -77,6 +106,7 @@ else
   cp -a /etc/passwd /etc/shadow /etc/sudoers "$BK/" 2>/dev/null
   log "    baselined $(wc -l < "$BK/baseline.sha256") files, $(wc -l < "$BK/inventory.base") inventory paths"
 fi
+account_census
 
 # 2. authorized_keys audit (backup, do NOT auto-delete — review first)
 # R8: blackteam/whiteteam (and root) keys are PROTECTED. We never clear them and we flag them
