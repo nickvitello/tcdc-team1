@@ -25,7 +25,7 @@ gentle(){ nice -n 19 ionice -c3 "$@"; }
 write_conf(){
   mkdir -p "$DIR" && chmod 700 "$DIR"
   cat > "$CONF" <<'EOF'
-# TCDC AIDE config (written by aide.sh; edit aide.sh, not this file)
+# TCDC AIDE config (Optimized Middle-Ground Edition)
 database_in=file:/root/aide/aide.db
 database_out=file:/root/aide/aide.db.new
 database_new=file:/root/aide/aide.db.new
@@ -36,39 +36,45 @@ report_grouped=yes
 report_detailed_init=no
 warn_dead_symlinks=no
 
-# FULL: owner, group, permissions, size, mtime, ctime, type, link target, SHA-256
+# FULL: Comprehensive attributes + crypto signature for high-risk targets
 FULL = p+u+g+s+m+c+ftype+l+sha256
 
-# config, accounts, sudo, cron, ssh, pam, systemd units, profile scripts
+# 1. CORE OPERATING SYSTEM ATTACK SURFACE
 /etc FULL
-# binaries and admin tools (a replaced sshd/ls/ps shows up here)
+/boot FULL
+
+# 2. GLOBAL EXECUTABLES & BINARIES (Catches persistence tools/backdoors)
+/bin FULL
+/sbin FULL
 /usr/bin FULL
 /usr/sbin FULL
 /usr/local FULL
-# systemd units shipped by packages, and PAM modules (password-stealing backdoors)
+
+# 3. KERNEL EXTENSIONS & SYSTEM RUNTIMES (Catches persistence modules)
+/lib FULL
+/lib64 FULL
 /usr/lib/systemd/system FULL
 /usr/lib/[^/]+/security FULL
-# per-user cron, the scored web/FTP content
+
+# 4. ENTIRE USER PROFILE INTERFACES (Watches all home directories & root space)
+/root FULL
+/home FULL
+
+# 5. WEBSERVICES & VARIABLE RESOURCE ARTIFACTS
 /var/spool/cron FULL
 /var/www FULL
 /srv FULL
 /var/ftp FULL
-# login keys and shell startup files (root and every user)
-/root/\.ssh FULL
-/root/\.(bashrc|profile|bash_profile) FULL
-/home/[^/]+/\.ssh FULL
-/home/[^/]+/\.(bashrc|profile|bash_profile|bash_logout) FULL
 
-# --- excluded ---
-# organizer tooling: not ours to watch or touch (R7)
-!/var/ossec
-# our own tool data (etckeeper's history lives in /etc/.git)
-!/etc/\.git
-!/etc/\.etckeeper$
+# --- EXCLUSIONS (Keeps initialization fast) ---
 !/root/aide
 !/root/timecapsule
 !/root/tcdc-baseline
-# churn that is not an attack
+!/var/ossec
+!/var/log
+!/var/cache
+!/etc/\.git
+!/etc/\.etckeeper$
 !/etc/mtab$
 !/etc/adjtime$
 !/etc/.*-$
