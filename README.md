@@ -48,10 +48,14 @@ curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh 
 ```
 # MQTT (Win11):
 iex (irm https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.ps1)
-# AD DC (Win2025): run boot.ps1, then audit, then apply:
-powershell -ep bypass -File $env:TEMP\tcdc\ad-harden.ps1          # report
-powershell -ep bypass -File $env:TEMP\tcdc\ad-harden.ps1 -Apply   # safe changes
+# AD DC (Win2025): run boot.ps1 (it stages modules at C:\tcdc-baseline), then:
+powershell -ep bypass -File C:\tcdc-baseline\ad-harden.ps1          # report
+powershell -ep bypass -File C:\tcdc-baseline\ad-harden.ps1 -Apply   # safe changes
 ```
+> **Firewall is audit-only by default** (enabling it blindly can activate a latent Block policy and
+> drop a scored service). `boot.ps1` STAGES verified allow rules for the box's scored ports but does
+> not turn the firewall on. After confirming the scored service still answers, enable it:
+> `harden.ps1 -Box mqtt -ScoredPorts 1883 -EnableFirewall` (add `-EnableDefaultDeny` only once validated).
 
 ## Password rule (read twice — this is where teams lose uptime)
 NEVER change a password by hand. Always:

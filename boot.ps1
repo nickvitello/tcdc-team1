@@ -22,7 +22,27 @@ if(-not $ok){
   Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
   return
 }
+# review #1: pass the box's scored ports so harden.ps1 can STAGE verified allow rules.
+# Firewall is NOT auto-enabled here (enabling can activate a latent Block policy) - the
+# Windows lead enables it with -EnableFirewall after validating. Empty map => audit-only.
+$tcpMap = @{ mqtt=@(1883); ad=@(389,636,88,445,135,53); dc=@(389,636,88,445,135,53) }
+$udpMap = @{ ad=@(53,88,389,123); dc=@(53,88,389,123) }
+$bl = $box.ToLower()
+$ha = @("-ep","bypass","-File","$dir\harden.ps1","-Box",$box)
+if($tcpMap.ContainsKey($bl)){ $ha += "-ScoredPorts"; $ha += $tcpMap[$bl] }
+if($udpMap.ContainsKey($bl)){ $ha += "-ScoredUdpPorts"; $ha += $udpMap[$bl] }
 Write-Host "[boot] running harden.ps1 box=$box"
-& powershell.exe -ep bypass -File "$dir\harden.ps1" -Box $box
+& powershell.exe @ha
 if($LASTEXITCODE -ne 0){ Write-Host "[boot] !! harden.ps1 exited $LASTEXITCODE - review $dir and C:\tcdc-baseline\harden-*.log" }
-Write-Host "[boot] AD box? then: powershell -ep bypass -File $dir\ad-harden.ps1   (add -Apply when ready)"
+# review #6: stage modules at a STABLE path the README can reference (the timestamped $dir is
+# unpredictable). C:\tcdc-baseline is created by harden.ps1 above.
+$bk = "C:\tcdc-baseline"
+if(Test-Path $bk){
+  Copy-Item "$dir\ad-harden.ps1" $bk -Force -ErrorAction SilentlyContinue
+  Copy-Item "$dir\harden.ps1"   $bk -Force -ErrorAction SilentlyContinue
+  Write-Host "[boot] AD DC? modules staged at $bk . Run:"
+  Write-Host "         powershell -ep bypass -File $bk\ad-harden.ps1          # report"
+  Write-Host "         powershell -ep bypass -File $bk\ad-harden.ps1 -Apply   # safe changes"
+} else {
+  Write-Host "[boot] AD DC? then: powershell -ep bypass -File $dir\ad-harden.ps1   (add -Apply when ready)"
+}

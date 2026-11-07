@@ -27,14 +27,24 @@ while read -r want path; do
   [ "$have" = "$want" ] || alert "file CHANGED $path"
 done < "$BK/baseline.sha256"
 
-# 1b. NEW files in cron/sudoers/systemd dirs since baseline (review #8 - new-file persistence)
-if [ -f "$BK/inventory.base" ]; then
-  find /etc/sudoers.d /etc/cron.d /etc/cron.hourly /etc/cron.daily \
-       /etc/cron.weekly /etc/cron.monthly /var/spool/cron /etc/systemd/system \
-       -type f 2>/dev/null | sort -u > "$BK/.inv.now"
+# 1b. NEW files/symlinks in cron/sudoers/systemd dirs since baseline (persistence)
+# review #4: no 'tcdc-watch' substring exclusion - our own units are in inventory.base
+#            (harden.sh baselines them explicitly), so an attacker file named
+#            tcdc-watch-helper is NOT whitelisted by a name match.
+# review #12: enumerate symlinks too (-type l), report their target.
+PDIRS="/etc/sudoers.d /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly /var/spool/cron /etc/systemd/system"
+if [ -f "$BK/inventory.base" ]; then   # present (even if empty = baselined, no files) vs absent (old format)
+  find $PDIRS \( -type f -o -type l \) 2>/dev/null | sort -u > "$BK/.inv.now"
   grep -vxF -f "$BK/inventory.base" "$BK/.inv.now" 2>/dev/null \
-    | grep -v 'tcdc-watch' \
-    | while read -r p; do [ -n "$p" ] && alert "NEW persistence file: $p"; done
+    | while read -r p; do
+        [ -n "$p" ] || continue
+        if [ -L "$p" ]; then alert "NEW persistence symlink: $p -> $(readlink -f "$p" 2>/dev/null)"
+        else alert "NEW persistence file: $p"; fi
+      done
+else
+  # review #5: an old-format baseline has no inventory -> new-file detection would be a
+  # silent no-op. Make the blind spot LOUD instead of quietly accepting it.
+  alert "baseline has NO inventory.base (old format) - NEW-file/symlink detection is DISABLED; re-run 'harden.sh $BOX --rebaseline' to upgrade"
 fi
 
 # 2. new enabled services since baseline (Metasploit/Sliver persistence)
@@ -46,7 +56,7 @@ fi
 
 # 3. new systemd timers (common C2 persistence)
 systemctl list-timers --all --no-legend 2>/dev/null | awk '{print $NF}' | grep -v '^$' \
-  | grep -v 'tcdc-watch' > "$BK/.timers.now" 2>/dev/null
+  | grep -vx 'tcdc-watch.timer' > "$BK/.timers.now" 2>/dev/null
 [ -f "$BK/.timers.base" ] || cp "$BK/.timers.now" "$BK/.timers.base" 2>/dev/null
 grep -vxF -f "$BK/.timers.base" "$BK/.timers.now" 2>/dev/null \
   | while read -r t; do [ -n "$t" ] && alert "NEW timer: $t"; done

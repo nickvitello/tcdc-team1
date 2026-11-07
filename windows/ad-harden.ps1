@@ -1,7 +1,10 @@
 # TCDC Team 1 - Active Directory hardening (Win Server 2025 DC). Run as Domain Admin on the DC.
 # SURGICAL: never touches krbtgt, never disables service/computer accounts, never deletes users (R8).
 # Reports + light safe changes only. Password rotation is MANUAL via the vault.
-param([switch]$Apply)   # default = report only. -Apply does the safe changes.
+param([switch]$Apply,[switch]$Rebaseline)   # default = report only. -Apply does the safe changes.
+# review #9: group baselines are captured ONCE (first run). Re-runs REPORT drift against the
+# accepted baseline instead of overwriting it - otherwise running the audit after a malicious
+# membership change would reset the reference the watcher compares against. -Rebaseline to accept.
 $ErrorActionPreference = "Continue"
 $BK = "C:\tcdc-baseline"; New-Item -ItemType Directory -Force -Path $BK | Out-Null
 $ts = Get-Date -Format "yyyyMMdd-HHmmss"; $log="$BK\ad-harden-$ts.log"
@@ -10,12 +13,24 @@ Import-Module ActiveDirectory -ErrorAction SilentlyContinue
 
 Log "=== AD harden (Apply=$Apply) ==="
 
-# 1. Privileged group membership snapshot + report (backdoors live here)
+# 1. Privileged group membership: capture baseline ONCE, then report drift (review #9)
 foreach($g in "Domain Admins","Enterprise Admins","Administrators","Schema Admins","Account Operators"){
   try {
     $m = Get-ADGroupMember $g -ErrorAction Stop | Select-Object -Expand SamAccountName
-    $m | Out-File "$BK\grp.$($g -replace ' ','_').base.txt"
-    Log "[grp] $g : $($m -join ', ')"
+    $bf = "$BK\grp.$($g -replace ' ','_').base.txt"
+    if((Test-Path $bf) -and -not $Rebaseline){
+      $base = Get-Content $bf
+      $added = @($m | Where-Object { $base -notcontains $_ })
+      $removed = @($base | Where-Object { $m -notcontains $_ })
+      if($added.Count -or $removed.Count){
+        Log "[grp] $g : DRIFT vs baseline  added[$($added -join ', ')] removed[$($removed -join ', ')]  (current: $($m -join ', '))"
+      } else {
+        Log "[grp] $g : $($m -join ', ')  (matches baseline)"
+      }
+    } else {
+      $m | Out-File $bf
+      Log "[grp] $g : $($m -join ', ')  (baseline captured)"
+    }
   } catch { Log "[grp] $g : (n/a)" }
 }
 

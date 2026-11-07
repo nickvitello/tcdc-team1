@@ -37,10 +37,22 @@ build_baseline(){
   getent passwd | awk -F: '$3>=0{print $1":"$6}' | while IFS=: read -r u home; do
     ak="$home/.ssh/authorized_keys"; [ -f "$ak" ] && sha256sum "$ak" >> "$HASHES" 2>/dev/null
   done
-  # path INVENTORY so NEW files (not just changed ones) are detectable (review #8)
+  # path INVENTORY so NEW files/symlinks (not just changed ones) are detectable
+  # (review #12: include -type l so a symlinked persistence file is recorded).
   find /etc/sudoers.d /etc/cron.d /etc/cron.hourly /etc/cron.daily \
        /etc/cron.weekly /etc/cron.monthly /var/spool/cron /etc/systemd/system \
-       -type f 2>/dev/null | sort -u > "$INV"
+       \( -type f -o -type l \) 2>/dev/null | sort -u > "$INV"
+}
+
+# record our own watcher units in the inventory so the watch-agent does not flag them as
+# NEW persistence (review #4: explicit baseline of OUR artifacts, not a name-substring skip)
+bless_own_units(){
+  local INV="$1"
+  [ -s "$INV" ] || return 0
+  for u in /etc/systemd/system/tcdc-watch.service /etc/systemd/system/tcdc-watch.timer; do
+    grep -qxF "$u" "$INV" 2>/dev/null || echo "$u" >> "$INV"
+  done
+  sort -u "$INV" -o "$INV" 2>/dev/null || true
 }
 
 # 1. Baseline snapshot (drift detection source of truth)
@@ -48,6 +60,17 @@ if [ -s "$BK/baseline.sha256" ] && [ "$REBASELINE" -eq 0 ]; then
   log "[1] baseline EXISTS -> keeping accepted baseline (re-run with --rebaseline to replace)"
   log "    forensic snapshot only -> $BK/forensic-$TS.sha256"
   build_baseline "$BK/forensic-$TS.sha256" "$BK/forensic-$TS.inv"
+  # review #5: an OLD-format baseline (pre-inventory) leaves the watcher blind to new files.
+  # Build the inventory now so detection works, but mark it clearly as an UPGRADE snapshot the
+  # operator must review (a pre-existing planted file would otherwise be silently accepted).
+  if [ ! -f "$BK/inventory.base" ]; then
+    log "[1!] OLD-FORMAT baseline (no inventory.base). Building inventory as UPGRADE snapshot."
+    log "     REVIEW these paths - they are now accepted as baseline:"
+    build_baseline "$BK/.upgrade-$TS.sha256" "$BK/inventory.base"
+    bless_own_units "$BK/inventory.base"
+    sed 's/^/       /' "$BK/inventory.base" | tee -a "$LOG"
+    rm -f "$BK/.upgrade-$TS.sha256"
+  fi
 else
   log "[1] capturing accepted baseline -> $BK/baseline.sha256 (+ inventory)"
   build_baseline "$BK/baseline.sha256" "$BK/inventory.base"
@@ -87,6 +110,18 @@ log "[5] sshd hardening"
 SSHD=/etc/ssh/sshd_config
 if [ -f "$SSHD" ]; then
   cp -a "$SSHD" "$BK/sshd_config.$TS"
+  # review #9: decide BEFORE editing whether sshd_config was CLEAN vs the accepted baseline.
+  # If it already drifted (someone changed e.g. AuthorizedKeysFile), re-blessing it after our
+  # edit would silently accept that unrelated drift. Only re-bless when it was clean (so we
+  # don't flag our OWN hardening) or when --rebaseline is explicit.
+  SSHD_PRECLEAN=0
+  if grep -q " $SSHD\$" "$BK/baseline.sha256" 2>/dev/null; then
+    _want="$(grep " $SSHD\$" "$BK/baseline.sha256" | tail -1 | awk '{print $1}')"
+    _have="$(sha256sum "$SSHD" 2>/dev/null | awk '{print $1}')"
+    [ -n "$_want" ] && [ "$_want" = "$_have" ] && SSHD_PRECLEAN=1
+  else
+    SSHD_PRECLEAN=1   # no baseline entry yet (first run): our post-edit state is the baseline
+  fi
   set_sshd(){ grep -qiE "^\s*$1\b" "$SSHD" && sed -i "s|^\s*$1.*|$1 $2|I" "$SSHD" || echo "$1 $2" >> "$SSHD"; }
   set_sshd PermitRootLogin prohibit-password
   set_sshd X11Forwarding no
@@ -98,10 +133,15 @@ if [ -f "$SSHD" ]; then
     else
       log "    !! sshd reload FAILED (both ssh and sshd units) — config valid but not applied; check manually"
     fi
-    # re-baseline ONLY the file we just changed, so the watcher never flags our own hardening
-    if grep -q ' /etc/ssh/sshd_config$' "$BK/baseline.sha256" 2>/dev/null; then
-      grep -v ' /etc/ssh/sshd_config$' "$BK/baseline.sha256" > "$BK/.b.tmp" 2>/dev/null && mv "$BK/.b.tmp" "$BK/baseline.sha256"
+    if [ "$SSHD_PRECLEAN" -eq 1 ] || [ "$REBASELINE" -eq 1 ]; then
+      # re-baseline ONLY the file we just changed, so the watcher never flags our own hardening
+      if grep -q " $SSHD\$" "$BK/baseline.sha256" 2>/dev/null; then
+        grep -v " $SSHD\$" "$BK/baseline.sha256" > "$BK/.b.tmp" 2>/dev/null && mv "$BK/.b.tmp" "$BK/baseline.sha256"
+      fi
       sha256sum "$SSHD" >> "$BK/baseline.sha256"
+    else
+      log "    !! sshd_config had PRE-EXISTING drift vs baseline - NOT re-blessing. Watcher will keep"
+      log "       flagging $SSHD until you review it and re-run with --rebaseline to accept."
     fi
   else
     log "    !! sshd -t FAILED, reverting"; cp -a "$BK/sshd_config.$TS" "$SSHD"
@@ -122,6 +162,9 @@ if [ -x /usr/local/sbin/tcdc-watch ]; then
   printf '[Unit]\nDescription=TCDC drift watch 60s\n[Timer]\nOnBootSec=30\nOnUnitActiveSec=60\n[Install]\nWantedBy=timers.target\n' > /etc/systemd/system/tcdc-watch.timer
   systemctl daemon-reload 2>/dev/null
   systemctl enable --now tcdc-watch.timer 2>/dev/null && log "    watch timer active (60s)"
+  # our units live under /etc/systemd/system (inventoried). Record them in the accepted
+  # inventory so the watcher treats them as known, not as NEW persistence (review #4).
+  bless_own_units "$BK/inventory.base"
 else
   log "    !! watch-agent not installed (no internet?) — copy manually"
 fi

@@ -3,15 +3,18 @@
 # Does NOT change passwords (funnel those through the vault to keep /team/passwords in sync).
 # Does NOT delete users/accounts (R8). Reports + baselines; surgical changes only.
 #
-# FIREWALL (review #2): default-deny is OFF unless you pass -EnableDefaultDeny. By default
-# this only ENABLES the firewall and stages ALLOW rules for mgmt + scored ports, leaving the
-# default inbound action unchanged so it CANNOT lock out a scored service or your RDP/WinRM.
+# FIREWALL (review #1): AUDIT-ONLY by default. Enabling the firewall at all can activate an
+# existing (disabled) Block policy and drop a scored service, so we touch it ONLY when you
+# pass -ScoredPorts/-ScoredUdpPorts. Then we CREATE + VERIFY allow rules FIRST, and enable the
+# profile only with -EnableFirewall (default-deny only with -EnableDefaultDeny). TCP and UDP.
 # BASELINE (review #11): first run captures the accepted baseline; re-runs keep it and write a
 # timestamped forensic snapshot instead. Pass -Rebaseline to deliberately accept current state.
 param(
   [string]$Box = $env:COMPUTERNAME,
   [int[]]$ScoredPorts = @(),
+  [int[]]$ScoredUdpPorts = @(),
   [int[]]$MgmtPorts = @(3389,5985,445,135),
+  [switch]$EnableFirewall,
   [switch]$EnableDefaultDeny,
   [switch]$Rebaseline
 )
@@ -29,12 +32,14 @@ function Snap-Services($path){
     Export-Csv $path -NoTypeInformation
 }
 function Snap-Tasks($path){
+  # review #8: capture the COMPLETE ordered action list, not just the first action, so an
+  # appended second action (common C2 trick) changes the recorded value.
   Get-ScheduledTask | ForEach-Object {
-    $t=$_; $a=$t.Actions | Select-Object -First 1
+    $t=$_
+    $acts = (@($t.Actions) | ForEach-Object { "{0} {1}" -f $_.Execute,$_.Arguments }) -join " ;; "
     [pscustomobject]@{
       Id      = $t.TaskPath + $t.TaskName
-      Exec    = $a.Execute
-      Args    = $a.Arguments
+      Actions = $acts
       RunAs   = $t.Principal.UserId
       State   = $t.State
     }
@@ -65,15 +70,24 @@ function Get-AdminMembers {
 }
 
 # 1. Baseline (accepted on first run; forensic-only on re-runs unless -Rebaseline)
+# review #5: baseline CSV schema is versioned. An old-format baseline (v<2: schtasks had
+# Exec/Args columns, services had no joined compare) is INCOMPATIBLE with the current watcher,
+# so re-capture it on upgrade instead of leaving the watcher comparing missing fields.
+$BASELINE_FMT = 2
+$fmtFile = "$BK\baseline.fmt"
+$haveFmt = if(Test-Path $fmtFile){ try { [int](Get-Content $fmtFile -Raw) } catch { 0 } } else { 0 }
 $firstRun = -not (Test-Path "$BK\services.base.csv")
-if($firstRun -or $Rebaseline){
-  Log "[1] capturing accepted baseline -> $BK\*.base.*"
+$oldFormat = (-not $firstRun) -and ($haveFmt -lt $BASELINE_FMT)
+if($firstRun -or $Rebaseline -or $oldFormat){
+  if($oldFormat){ Log "[1] OLD baseline format v$haveFmt < v$BASELINE_FMT -> re-capturing baseline (schema upgrade). Forensic snapshots retained." }
+  else { Log "[1] capturing accepted baseline -> $BK\*.base.*" }
   try { Get-AdminMembers |
         Export-Csv "$BK\admins.base.csv" -NoTypeInformation } catch { Log "  (not workgroup local-admins)" }
   Snap-Services "$BK\services.base.csv"
   Snap-Tasks "$BK\schtasks.base.csv"
   Snap-RunKeys "$BK\runkeys.base.txt"
-  Log "    baselined admins/services(+path)/schtasks(+actions)/runkeys(all hives)"
+  Set-Content $fmtFile $BASELINE_FMT
+  Log "    baselined admins/services(+path+acct+startmode)/schtasks(+all actions)/runkeys(all hives) fmt=v$BASELINE_FMT"
 } else {
   Log "[1] baseline EXISTS -> forensic snapshot only ($ts). Pass -Rebaseline to replace accepted baseline."
   try { Get-AdminMembers |
@@ -108,22 +122,48 @@ auditpol /set /subcategory:"Process Creation" /success:enable | Out-Null
 wevtutil sl Security /ms:134217728 2>$null
 Log "    audit policy + Security log size set"
 
-# 6. Firewall - FAIL-SAFE (review #2): no default-deny unless explicitly asked
+# 6. Firewall - AUDIT-ONLY by default (review #1)
 Log "[6] firewall"
 cmd /c "netsh advfirewall export `"$BK\firewall-$ts.wfw`"" | Out-Null
 Log "    exported current policy -> $BK\firewall-$ts.wfw (rollback: netsh advfirewall import that file)"
-Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True -ErrorAction SilentlyContinue
-$allowPorts = @($MgmtPorts + $ScoredPorts | Select-Object -Unique)
-foreach($p in $allowPorts){
-  New-NetFirewallRule -DisplayName "TCDC-allow-tcp-$p" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $p -ErrorAction SilentlyContinue | Out-Null
+# report effective policy so the operator SEES whether a disabled Block policy is lurking
+foreach($pr in (Get-NetFirewallProfile -ErrorAction SilentlyContinue)){
+  Log ("    profile {0}: Enabled={1} DefaultInbound={2}" -f $pr.Name,$pr.Enabled,$pr.DefaultInboundAction)
 }
-Log ("    staged inbound ALLOW rules for: " + ($allowPorts -join ", "))
-if($EnableDefaultDeny -and $ScoredPorts.Count -gt 0){
-  Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction Block -DefaultOutboundAction Allow -ErrorAction SilentlyContinue
-  Log "    DEFAULT-DENY inbound ENABLED. VALIDATE scored service + RDP/WinRM externally NOW."
-  Log "    if anything broke: netsh advfirewall import `"$BK\firewall-$ts.wfw`""
+if($ScoredPorts.Count -eq 0 -and $ScoredUdpPorts.Count -eq 0){
+  Log "    AUDIT-ONLY: no -ScoredPorts/-ScoredUdpPorts given, firewall NOT touched. Enabling it can"
+  Log "    activate an existing (disabled) Block policy and drop a scored service - so we don't guess."
+  Log "    Re-run: harden.ps1 -Box $Box -ScoredPorts <tcp..> [-ScoredUdpPorts <udp..>] [-EnableFirewall] [-EnableDefaultDeny]"
 } else {
-  Log "    default inbound UNCHANGED (no lockout). To default-deny: -ScoredPorts <p> -EnableDefaultDeny after confirming allow rules."
+  # CREATE + VERIFY allow rules FIRST, while the policy is still whatever it was (no window
+  # where the profile is on but the rule is missing).
+  $tcp = @($MgmtPorts + $ScoredPorts | Select-Object -Unique)
+  $udp = @($ScoredUdpPorts | Select-Object -Unique)
+  foreach($p in $tcp){
+    New-NetFirewallRule -DisplayName "TCDC-allow-tcp-$p" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $p -ErrorAction SilentlyContinue | Out-Null
+  }
+  foreach($p in $udp){
+    New-NetFirewallRule -DisplayName "TCDC-allow-udp-$p" -Direction Inbound -Action Allow -Protocol UDP -LocalPort $p -ErrorAction SilentlyContinue | Out-Null
+  }
+  $missing = @()
+  foreach($p in $tcp){ if(-not (Get-NetFirewallRule -DisplayName "TCDC-allow-tcp-$p" -ErrorAction SilentlyContinue)){ $missing += "tcp/$p" } }
+  foreach($p in $udp){ if(-not (Get-NetFirewallRule -DisplayName "TCDC-allow-udp-$p" -ErrorAction SilentlyContinue)){ $missing += "udp/$p" } }
+  if($missing.Count -gt 0){
+    Log ("    !! allow-rule creation FAILED for: " + ($missing -join ", ") + " -> NOT enabling firewall. Fix and re-run.")
+  } else {
+    Log ("    verified ALLOW rules: tcp[" + ($tcp -join ",") + "] udp[" + ($udp -join ",") + "]")
+    if($EnableFirewall -or $EnableDefaultDeny){
+      Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True -ErrorAction SilentlyContinue
+      Log "    firewall ENABLED (allow rules verified first)."
+      if($EnableDefaultDeny){
+        Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction Block -DefaultOutboundAction Allow -ErrorAction SilentlyContinue
+        Log "    DEFAULT-DENY inbound ENABLED. VALIDATE scored service + RDP/WinRM externally NOW."
+      }
+      Log "    if anything broke: netsh advfirewall import `"$BK\firewall-$ts.wfw`""
+    } else {
+      Log "    allow rules STAGED but firewall left as-is (pass -EnableFirewall to turn it on after validating)."
+    }
+  }
 }
 
 # 7. Install drift watch-agent scheduled task (every 2 min)
@@ -135,7 +175,13 @@ if(Test-Path $agent){
   $act = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ep bypass -File `"$BK\watch-agent.ps1`" -Box $Box"
   $trg = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)
   Register-ScheduledTask -TaskName "TCDC-Watch" -Action $act -Trigger $trg -RunLevel Highest -Force -User "SYSTEM" | Out-Null
-  if(Get-ScheduledTask -TaskName "TCDC-Watch" -ErrorAction SilentlyContinue){ Log "    TCDC-Watch task registered (2 min)" }
+  if(Get-ScheduledTask -TaskName "TCDC-Watch" -ErrorAction SilentlyContinue){
+    Log "    TCDC-Watch task registered (2 min)"
+    # review #8: fold our own task into the task baseline (captured in step 1 BEFORE this task
+    # existed) so the watcher verifies TCDC-Watch against its known definition instead of
+    # excluding it by name. Only on first/baseline capture, never on a plain re-run.
+    if($firstRun -or $Rebaseline -or $oldFormat){ Snap-Tasks "$BK\schtasks.base.csv"; Log "    re-baselined tasks (now includes TCDC-Watch)" }
+  }
   else { Log "    !! TCDC-Watch registration not confirmed - run watch-agent manually" }
 } else { Log "    !! watch-agent.ps1 not found alongside; copy manually" }
 

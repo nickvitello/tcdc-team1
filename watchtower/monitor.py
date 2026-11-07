@@ -96,6 +96,21 @@ def c_ftp(t):
     f.login(user, pw); f.nlst(); f.quit()
     return True, "login+list ok (%s)" % user, False
 
+def _dns_skip_name(data, off):
+    """Advance past a DNS name at off. Handles compression pointers. Raises on overrun."""
+    seen = 0
+    while True:
+        if off >= len(data): raise ValueError("name overruns packet")
+        l = data[off]
+        if l == 0:
+            return off + 1
+        if (l & 0xC0) == 0xC0:          # compression pointer: 2 bytes, name ends here
+            if off + 1 >= len(data): raise ValueError("name pointer overruns packet")
+            return off + 2
+        off += 1 + l                    # ordinary label
+        seen += 1
+        if seen > 128: raise ValueError("name too long")  # loop guard
+
 def c_dns(t):
     q = t.get("query", "example.com")
     txid = 0x1234
@@ -104,17 +119,43 @@ def c_dns(t):
     pkt = header + qn + struct.pack(">HH", 1, 1)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
     s.sendto(pkt, (t["host"], t.get("port", 53)))
-    data, src = s.recvfrom(1024); s.close()
+    data, src = s.recvfrom(2048); s.close()
     if len(data) < 12: return False, "dns short", False
-    rtxid = struct.unpack(">H", data[0:2])[0]
-    rcode = data[3] & 0x0F
-    ancount = struct.unpack(">H", data[6:8])[0]
+    rtxid, flags, qd, an, ns, ar = struct.unpack(">HHHHHH", data[:12])
+    rcode = flags & 0x0F
     if rtxid != txid: return False, "dns txid-mismatch", False
-    if src[0] != t["host"]: return False, "dns wrong-src %s" % src[0], False
+    # response must come from the queried server. host may be an IP or a name - resolve so a
+    # configured DNS hostname does not cause a false wrong-src (review #11).
+    try: expected = {socket.gethostbyname(t["host"]), t["host"]}
+    except Exception: expected = {t["host"]}
+    if src[0] not in expected: return False, "dns wrong-src %s" % src[0], False
+    if not (flags & 0x8000): return False, "dns not-a-response", False
     if rcode != 0: return False, "rcode=%d" % rcode, False
-    if t.get("expect_answer", True) and ancount == 0:
+    # PARSE the question + answer sections. A 12-byte header claiming answers with no RR
+    # bytes is malformed and must NOT pass as success (review #11).
+    try:
+        off = 12
+        for _ in range(qd):
+            off = _dns_skip_name(data, off) + 4      # qtype(2) + qclass(2)
+            if off > len(data): raise ValueError("question section overruns")
+        answers = []
+        for _ in range(an):
+            off = _dns_skip_name(data, off)
+            if off + 10 > len(data): raise ValueError("answer header overruns")
+            atype, aclass, ttl, rdlen = struct.unpack(">HHIH", data[off:off + 10])
+            off += 10
+            if off + rdlen > len(data): raise ValueError("rdata overruns")
+            answers.append((atype, data[off:off + rdlen])); off += rdlen
+    except (ValueError, struct.error) as ex:
+        return False, "dns malformed (%s)" % ex, False
+    if t.get("expect_answer", True) and an == 0:
         return False, "rcode=0 but 0 answers", False  # NXRECORD-ish; record gone
-    return True, "rcode=0 ancount=%d" % ancount, False
+    want_ip = t.get("expect_ip")
+    if want_ip:
+        got = [".".join(str(b) for b in rd) for ty, rd in answers if ty == 1 and len(rd) == 4]
+        if want_ip not in got:
+            return False, "dns A %s != expect_ip %s" % (got, want_ip), False
+    return True, "rcode=0 ancount=%d (parsed)" % an, False
 
 def c_mqtt(t):
     cid = b"tcdcwatch"
@@ -160,12 +201,22 @@ def c_ldap(t):
     if j == -1 or j + 2 >= len(resp):
         return False, "ldap no-resultcode %s" % resp[:12].hex(), False
     code = resp[j + 2]
-    # 0 = success. anonymous bind may be refused by policy -> still "up" (server answered
-    # LDAP correctly). Treat 0 (success) and 49 (invalidCreds, i.e. anon disabled) as UP-reachable
-    # but flag non-zero so you SEE it. Only a non-LDAP / no answer is DOWN.
+    # RFC 4511 resultCode semantics - distinguish success, auth-policy, and SERVICE ERROR:
+    #   0  success            -> HEALTHY (up, full health)
+    #   49 invalidCredentials -> anon bind refused by policy. Server answered LDAP correctly:
+    #                            REACHABLE, but service health is UNKNOWN (reach-only up -> the
+    #                            dashboard shows [reach] and check_one alerts on health loss).
+    #   51 busy / 52 unavailable / 2 protocolError / anything else
+    #                         -> SERVICE ERROR, counts as DOWN (review #2). These used to be
+    #                            reported as healthy; a healthy->unavailable transition emitted
+    #                            no DOWN alert. Now it does.
     if code == 0:
         return True, "ldap bind ok (rc=0)", False
-    return True, "ldap answered rc=%d (anon refused, server healthy)" % code, True
+    if code == 49:
+        return True, "ldap rc=49 invalidCreds (anon refused; reachable, health unknown)", True
+    names = {2: "protocolError", 51: "busy", 52: "unavailable", 53: "unwillingToPerform",
+             80: "other", 1: "operationsError"}
+    return False, "ldap rc=%d %s (service error - DOWN)" % (code, names.get(code, "resultCode")), False
 
 CHECKS = {"tcp": c_tcp, "http": c_http, "ssh": c_ssh, "ftp": c_ftp,
           "dns": c_dns, "mqtt": c_mqtt, "ldap": c_ldap}
@@ -196,7 +247,7 @@ def check_one(t):
     except Exception as e:
         ok, detail = False, "%s: %s" % (type(e).__name__, str(e)[:50])
     with LOCK:
-        st = STATE[t["name"]]; prev = st["up"]
+        st = STATE[t["name"]]; prev = st["up"]; prevreach = st.get("reach", False)
         st.update(up=ok, detail=detail, ts=time.time(), reach=reach)
         st["total"] += 1; st["ok"] += 1 if ok else 0
         st["hist"].append(1 if ok else 0); st["hist"] = st["hist"][-HIST:]
@@ -206,6 +257,10 @@ def check_one(t):
         notify(":red_circle: DOWN - %s (%s) - %s" % (t["name"], t["host"], detail))
     elif scored and ok and prev is False:
         notify(":green_circle: UP - %s (%s) - %s" % (t["name"], t["host"], detail))
+    # review #2: health LOSS without full DOWN - a service that was fully healthy now only
+    # answers at the reachability layer (e.g. LDAP rc=0 -> rc=49). Alert once on that edge.
+    elif scored and ok and prev and reach and not prevreach:
+        notify(":yellow_circle: DEGRADED - %s (%s) - %s" % (t["name"], t["host"], detail))
 
 def poll_once():
     with LOCK: reload_vault()

@@ -13,19 +13,47 @@ mangled by shell metacharacters. You type the SAME value you recorded here.
 
 Stored in vault.json (gitignored, mode 0600). Never commit it.
 """
-import json, os, sys, time, tempfile, shlex
+import json, os, sys, time, tempfile, shlex, fcntl, contextlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VP = os.path.join(HERE, "vault.json")
+LOCKP = os.path.join(HERE, ".vault.lock")
+
+@contextlib.contextmanager
+def locked():
+    """Advisory exclusive lock for the whole read-modify-write, so two concurrent
+    vault.py invocations can't lose each other's updates (review #10)."""
+    f = open(LOCKP, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        try: fcntl.flock(f, fcntl.LOCK_UN)
+        finally: f.close()
+
+def _abort(msg):
+    print("ABORT: %s" % msg); sys.exit(3)
 
 def load():
+    # review #10: ONLY an absent file means "new vault". A corrupt/unreadable vault must
+    # NOT be silently replaced with an empty one - that destroys recoverable credentials.
     try:
-        if os.path.exists(VP):
-            try: os.chmod(VP, 0o600)   # enforce private perms on existing file (review #12)
-            except OSError: pass
-        return json.load(open(VP))
-    except Exception:
+        with open(VP) as f:
+            raw = f.read()
+    except FileNotFoundError:
         return {"services": {}, "passwords": []}
+    except OSError as ex:
+        _abort("cannot read %s (%s). Refusing to proceed so creds aren't lost." % (VP, ex))
+    try: os.chmod(VP, 0o600)   # enforce private perms on existing file (review #12)
+    except OSError: pass
+    try:
+        data = json.loads(raw)
+    except ValueError as ex:
+        _abort("%s is corrupt/unparseable (%s). NOT overwriting. Back it up and fix by hand." % (VP, ex))
+    if not isinstance(data, dict):
+        _abort("%s is not a JSON object. NOT overwriting." % VP)
+    data.setdefault("services", {}); data.setdefault("passwords", [])
+    return data
 
 def save(v):
     # atomic write with 0600 so readers never see a partial file and other local
@@ -49,10 +77,11 @@ def _reject_bad(pw):
 
 def cmd_set(box, user, pw, win, ad):
     _reject_bad(pw)
-    v = load()
-    v["passwords"] = [p for p in v["passwords"] if not (p["box"] == box and p["user"] == user)]
-    v["passwords"].append({"box": box, "user": user, "pass": pw, "changed": now(), "synced": False})
-    save(v)
+    with locked():
+        v = load()
+        v["passwords"] = [p for p in v["passwords"] if not (p["box"] == box and p["user"] == user)]
+        v["passwords"].append({"box": box, "user": user, "pass": pw, "changed": now(), "synced": False})
+        save(v)
     qu = shlex.quote(user)
     print("recorded %s/%s (synced=False)" % (box, user))
     print("\nRUN THIS ON THE BOX - it PROMPTS for the new password (type the value above):")
@@ -67,15 +96,20 @@ def cmd_set(box, user, pw, win, ad):
     print("\nTHEN: update /team/passwords on the dashboard, then: python3 vault.py sync %s %s" % (box, user))
 
 def cmd_sync(box, user):
-    v = load(); hit = False
-    for p in v["passwords"]:
-        if p["box"] == box and p["user"] == user: p["synced"] = True; hit = True
-    save(v); print(("synced %s/%s (manual attestation - does NOT verify scorer)" % (box, user)) if hit else "no such entry")
+    with locked():
+        v = load(); hit = False
+        for p in v["passwords"]:
+            if p["box"] == box and p["user"] == user: p["synced"] = True; hit = True
+        # review #10: don't rewrite the file for a no-op (absent entry) - nothing to persist
+        if hit: save(v)
+    print(("synced %s/%s (manual attestation - does NOT verify scorer)" % (box, user)) if hit else "no such entry")
 
 def cmd_svc(name, user, pw):
     _reject_bad(pw)
-    v = load(); v.setdefault("services", {})[name] = {"user": user, "pass": pw}
-    save(v); print("service cred stored: %s (%s)" % (name, user))
+    with locked():
+        v = load(); v.setdefault("services", {})[name] = {"user": user, "pass": pw}
+        save(v)
+    print("service cred stored: %s (%s)" % (name, user))
 
 def cmd_list():
     v = load()
