@@ -12,7 +12,7 @@ jobs:
           python-version: '3.12'
       - run: python tests/regression_round2.py
       - run: python -m unittest discover -s tests -p 'test_*.py' -v
-      - run: bash -n boot.sh linux/harden.sh linux/watch-agent.sh tests/linux-install.sh linux/timecapsule.sh linux/fleet.sh linux/aide.sh linux/etckeeper.sh wazuh-agentless/checks/*.sh wazuh-agentless/tcdc-register.sh
+      - run: bash -n boot.sh linux/harden.sh linux/watch-agent.sh tests/linux-install.sh linux/timecapsule.sh linux/fleet.sh linux/aide.sh linux/etckeeper.sh linux/wazuh-agent.sh wazuh-agentless/checks/*.sh wazuh-agentless/tcdc-register.sh
       - name: Disposable Linux install and systemd smoke test
         run: sudo --preserve-env=GITHUB_ACTIONS bash tests/linux-install.sh
   windows:

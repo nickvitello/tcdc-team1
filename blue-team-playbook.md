@@ -11,6 +11,8 @@ elsewhere; this links to it rather than repeating it:
 | snapshots, diffs, rollback, `fleet.sh`, AIDE, etckeeper | [linux/TIMECAPSULE.md](linux/TIMECAPSULE.md) |
 | Linux password rotation | [rotate_pass/README.md](rotate_pass/README.md) |
 | agentless Wazuh setup | [wazuh-agentless/README.md](wazuh-agentless/README.md) |
+| network alerts and traffic baseline | [opnsense-suricata.md](opnsense-suricata.md) |
+| what attackers will try, and our answer to each step | [blue-team-tabletop.md](blue-team-tabletop.md) |
 | firewall changes | [firewall-opnsense.md](firewall-opnsense.md), [firewall-windows.md](firewall-windows.md) |
 
 ## 1. Ground rules (read once, follow all day)
@@ -39,7 +41,7 @@ elsewhere; this links to it rather than repeating it:
 | Linux A | ns1, ftp-archive | snapshots for all Linux boxes (`fleet.sh`) |
 | Linux B | artifactorium, ssh-workstation, ipcam | Wazuh dashboard watch |
 | Windows | ad, mqtt | AD password resets |
-| Network + passwords | opnsense | password master list and dashboard updates |
+| Network + passwords | opnsense, Suricata alerts | password master list and dashboard updates |
 | Injects | all injects (20% of score) | second pair of eyes on any risky change |
 
 One person owns the **password list**. Nobody changes a password without
@@ -70,9 +72,15 @@ Rival teams know every default password, so speed matters.
    - OPNsense: GUI root/admin password
 
    Each new password goes on the dashboard immediately.
+   **After rotating, kill sessions you don't recognize**: an SSH session opened
+   with the old password survives the change. Check `who`, then
+   `pkill -KILL -t <tty>`. Don't kill the scorer's short sessions.
 3. **OPNsense** (Network): restrict the web GUI to the management subnet, then
    block unused inbound ports for all sources. Keep the scored ports (53, 21, 80,
-   22, AD's ports, 1883) and your own management access open.
+   22, AD's ports, 1883) and your own management access open. Also **block the
+   server subnets (DMZ .10, internal .20, users .30) from reaching the management
+   subnet (.40)**, so a compromised box can't pivot to the jumpbox or the GUI.
+   R18 allows any rule between our own subnets.
 
 ### 08:15-09:00: hunt and harden
 Work the first-pass lists in section 4 (Linux) and section 5 (Windows), one
@@ -87,6 +95,12 @@ change at a time. When done, record the known-good state four ways:
 etckeeper and AIDE need `apt` access on the boxes; if `apt` fails, skip them,
 since timecapsule covers the same ground. Then start Wazuh (section 6).
 
+Network, meanwhile: turn on Suricata in alert-only mode and NetFlow on OPNsense
+([opnsense-suricata.md](opnsense-suricata.md)), then watch OPNsense CPU and the
+scoreboard for 15 minutes. **If there's no OPNsense GUI access**, use the
+host-firewall fallback at the top of that guide (ufw on every Linux box and the
+jumpbox, Windows Firewall on ad and mqtt).
+
 ### Steady state (09:00 onward)
 Every 30 minutes, each owner runs:
 - `./fleet.sh diff hardened now` (Linux A runs it for all Linux boxes)
@@ -97,7 +111,9 @@ Every 30 minutes, each owner runs:
 - a quick Windows check: section 5's persistence and event commands
 - a scoreboard look: anything red gets section 7, immediately
 
-Between rounds: Wazuh alerts (Linux B), injects, deeper service hardening.
+Between rounds: Wazuh alerts (Linux B), Suricata alerts (Network), injects,
+deeper service hardening. After about 30 minutes of NetFlow data, Network uses it
+to close inbound ports nobody uses (for all sources, per R18).
 
 ### 11:55 and 15:55
 Finish the current change, verify the service, and stop Wazuh
@@ -162,6 +178,21 @@ Confirm the real HTTP port with `ss -tulpn` first.
 Baseline and audit with `windows/harden.ps1` and `windows/ad-harden.ps1`
 (README). Change firewall policy only per firewall-windows.md.
 
+**Windows rollback points.** timecapsule doesn't run on Windows, so take these
+right after hardening:
+- **Firewall:** `harden.ps1` exports the policy. Roll back with
+  `netsh advfirewall import <file>`.
+- **Mosquitto:** `Copy-Item "C:\Program Files\mosquitto\mosquitto.conf" C:\tcdc-baseline\` (and its
+  password and ACL files).
+- **AD Group Policy:** `New-Item -ItemType Directory C:\tcdc-gpo; Backup-GPO -All -Path C:\tcdc-gpo`.
+  Roll back with `Restore-GPO`.
+- **mqtt (Windows 11) only:** a restore point,
+  `Checkpoint-Computer -Description tcdc-hardened`. Server 2025 has no System
+  Restore.
+- **The real undo for a wrecked Windows box is a store snapshot,** so AD is first
+  in line for one. Don't enable the AD Recycle Bin mid-competition: it's an
+  irreversible forest-wide change.
+
 ### Both boxes
 ```powershell
 Get-LocalGroupMember Administrators                       # mqtt; on the DC use AD groups below
@@ -171,6 +202,8 @@ Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Run, HKLM:\Soft
 Get-CimInstance Win32_Service | Where-Object { $_.PathName -notmatch 'Windows\\|Program Files' } | Select Name,PathName,StartName
 Get-MpComputerStatus | Select RealTimeProtectionEnabled; Get-MpPreference | Select ExclusionPath,ExclusionProcess
 Get-LocalUser | Select Name,Enabled                       # Guest should be disabled
+Get-CimInstance -Namespace root\subscription -ClassName __EventFilter          # WMI persistence: should be empty
+Get-CimInstance -Namespace root\subscription -ClassName CommandLineEventConsumer
 ```
 - An exclusion in Defender that you didn't add is an attacker hiding a tool.
 - Sysinternals Autoruns shows all persistence in one place, if you've staged it.
@@ -185,7 +218,7 @@ Get-WinEvent -FilterHashtable @{LogName='System'; Id=7045} -MaxEvents 10 | Forma
 
 ### ad (domain controller)
 ```powershell
-Get-ADGroupMember "Domain Admins"; Get-ADGroupMember "Enterprise Admins"; Get-ADGroupMember "Administrators"
+Get-ADGroupMember "Domain Admins" -Recursive; Get-ADGroupMember "Enterprise Admins" -Recursive; Get-ADGroupMember "Administrators" -Recursive   # -Recursive shows members of nested groups
 Get-ADUser -Filter {ServicePrincipalName -like "*"} -Properties ServicePrincipalName   # kerberoastable
 Get-ADUser -Filter {DoesNotRequirePreAuth -eq $true}                                  # AS-REP roastable
 Get-ADComputer -Filter {TrustedForDelegation -eq $true}                               # unconstrained delegation (DCs are expected)
@@ -270,7 +303,10 @@ If an alert is our own change, note it so nobody chases it.
    - config tampered with: `./fleet.sh restore <box> hardened <path>`, then
      syntax-check and reload. For files under `/etc`, an independent second
      option is `./fleet.sh etckeeper restore <box> hardened <path>`; use it if
-     the timecapsule copy is missing, or looks wrong.
+     the timecapsule copy is missing, or looks wrong. If the box's snapshots
+     were deleted, `./fleet.sh restore-copy <box> hardened <path>` restores from
+     the jumpbox's pulled copy. The full list of rollback options, in order, is
+     in `linux/TIMECAPSULE.md`.
    - account files can't be restored (by design); fix accounts with
      `userdel`, `usermod` and `gpasswd -d`.
 3. **Evict:**

@@ -5,11 +5,14 @@
 #   TEAM=5 ./fleet.sh snap <label>                 snapshot every box
 #   TEAM=5 ./fleet.sh diff <A> <B|now>             diff on every box (now = live state)
 #   TEAM=5 ./fleet.sh list                         snapshots on every box
-#   TEAM=5 ./fleet.sh pull                         copy every box's snapshots to ./capsules/
+#   TEAM=5 ./fleet.sh pull                         copy every box's snapshots + AIDE db to ./capsules/
 #   TEAM=5 ./fleet.sh restore <box> <label> <path> [path...]   roll files back on ONE box
+#   TEAM=5 ./fleet.sh restore-copy <box> <label> <path> [path...]   same, but from the copy
+#                                                  pulled to the jumpbox (if the box's own snapshots are gone)
 #   TEAM=5 ./fleet.sh aide <install|init|check|accept>   AIDE file integrity (see aide.sh)
 #   TEAM=5 ./fleet.sh etckeeper <install|list|commit <label>|diff <label>>   git history of /etc
 #   TEAM=5 ./fleet.sh etckeeper restore <box> <label> <path> [path...]       roll /etc files back on ONE box
+#   TEAM=5 ./fleet.sh wazuh-agent <check|status|remove|install <mgr-ip> <enroll-pw>>   full agent (wazuh-agents.md)
 #   TEAM=5 ./fleet.sh run "<command>"              run a command as root on every box
 #                                                  e.g. "debsums -c", "lynis audit system --quick"
 # Options (environment variables):
@@ -25,6 +28,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 TC="$HERE/timecapsule.sh"
 AIDE_SH="$HERE/aide.sh"
 ETCK_SH="$HERE/etckeeper.sh"
+WAGENT_SH="$HERE/wazuh-agent.sh"
 ADMIN_USER="${ADMIN_USER:-washington}"
 OUT="$HERE/capsules"
 
@@ -121,12 +125,15 @@ do_diff(){ tc_remote "$1" diff "$3" "$4"; }
 do_run(){  root_remote "$1" "$3"; }
 do_aide(){ script_remote "$1" "$AIDE_SH" "$3"; }
 do_etck(){ local t="$1"; shift 2; script_remote "$t" "$ETCK_SH" "$@"; }
+do_wagent(){ local t="$1"; shift 2; script_remote "$t" "$WAGENT_SH" "$@"; }
 do_pull(){
   local t="$1" name="$2" f
   mkdir -p "$OUT" && chmod 700 "$OUT"
   f="$OUT/$name-$(date +%H%M%S).tgz"
   needs_pw "$t"
-  if pw_line "$t" | sshx "$t" "sudo -S -p '' tar czf - -C /root timecapsule" > "$f" && [ -s "$f" ]; then
+  # timecapsule snapshots plus AIDE's database, so an attacker who edits them on
+  # the box can't hide changes from a comparison against these copies
+  if pw_line "$t" | sshx "$t" "sudo -S -p '' tar czf - -C /root --ignore-failed-read timecapsule aide 2>/dev/null" > "$f" && [ -s "$f" ]; then
     chmod 600 "$f"; echo "saved $f ($(du -h "$f" | cut -f1))"
   else
     rm -f "$f"; echo "!! nothing pulled (no snapshots yet, or tar failed)"; return 1
@@ -142,6 +149,17 @@ case "$cmd" in
   aide)    [[ "${1:-}" =~ ^(install|init|check|accept)$ ]] || die "usage: fleet.sh aide <install|init|check|accept>"
            [ -f "$AIDE_SH" ] || die "aide.sh must sit next to fleet.sh"
            each do_aide "$1" ;;
+  wazuh-agent)
+    [ -f "$WAGENT_SH" ] || die "wazuh-agent.sh must sit next to fleet.sh"
+    case "${1:-}" in
+      check|status|remove) each do_wagent "$1" ;;
+      install)
+        [ $# -eq 3 ] || die "usage: fleet.sh wazuh-agent install <manager-ip> <enrollment-password>"
+        echo "Installs OUR Wazuh agent on: ${NAMES[*]} (refuses on any box that already has an agent)."
+        read -rp "Black Team OK'd this and you ran 'check'? Type yes: " ok; [ "$ok" = "yes" ] || die "aborted"
+        each do_wagent install "$2" "$3" ;;
+      *) die "usage: fleet.sh wazuh-agent <check|status|remove|install <manager-ip> <enrollment-password>>" ;;
+    esac ;;
   etckeeper)
     [ -f "$ETCK_SH" ] || die "etckeeper.sh must sit next to fleet.sh"
     case "${1:-}" in
@@ -157,6 +175,44 @@ case "$cmd" in
       *) die "usage: fleet.sh etckeeper <install|list|commit <label>|diff <label>|restore <box> <label> <path>...>" ;;
     esac ;;
   pull)    each do_pull ;;
+  restore-copy)
+    [ $# -ge 3 ] || die "usage: fleet.sh restore-copy <box> <label> <path> [path...]"
+    box="$1"; label="$2"; shift 2
+    idx=""; for i in "${!NAMES[@]}"; do [ "${NAMES[$i]}" = "$box" ] && idx=$i; done
+    [ -n "$idx" ] || die "unknown box '$box' (known: ${NAMES[*]})"
+    [[ "$label" =~ ^[A-Za-z0-9._-]+$ ]] || die "bad label '$label'"
+    rels=()
+    for p in "$@"; do
+      [[ "$p" == /?* ]] || die "use absolute paths: $p"
+      case "$p" in
+        /|/etc|/etc/|/etc/passwd|/etc/shadow|/etc/group|/etc/gshadow|/etc/passwd-|/etc/shadow-|/etc/group-|/etc/gshadow-|/etc/audit|/etc/audit/*|/etc/cloud|/etc/cloud/*)
+          die "refusing to restore $p: it would revert accounts or touch organizer tooling (R7/R8)" ;;
+      esac
+      r="${p#/}"; rels+=("${r%/}")
+    done
+    # newest pulled copy of this box that contains the label
+    src=""; snapdir=""
+    for f in $(ls -1t "$OUT/$box"-*.tgz 2>/dev/null); do
+      d="$(tar tzf "$f" 2>/dev/null | grep -E "^timecapsule/[0-9]+-[0-9]+-$label/backup.tgz$" | sort | tail -1)"
+      [ -n "$d" ] && { src="$f"; snapdir="$d"; break; }
+    done
+    [ -n "$src" ] || die "no pulled copy of $box contains a snapshot '$label' (run ./fleet.sh pull while the box still has it)"
+    work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+    tar xzf "$src" -C "$work" "$snapdir" || die "cannot read $src"
+    bk="$work/$snapdir"
+    for r in "${rels[@]}"; do
+      tar tzf "$bk" | sed 's#/$##' | grep -qxF -e "$r" -e "$r/" || tar tzf "$bk" | grep -q "^$r/" \
+        || die "/$r is not in that snapshot's backup"
+    done
+    echo "restore-copy on $box from the jumpbox copy $(basename "$src") ($snapdir): ${rels[*]/#//}"
+    read -rp "Type yes to proceed: " ok; [ "$ok" = "yes" ] || die "aborted"
+    t="${TARGETS[$idx]}"; ts="$(date +%Y%m%d-%H%M%S)"; q="$(printf '%q ' "${rels[@]}")"
+    needs_pw "$t"
+    # save the box's current version first (undo), then extract the jumpbox copy over it
+    { pw_line "$t"; cat "$bk"; } | sshx "$t" "sudo -S -p '' bash -c 'mkdir -p /root/timecapsule && tar czf /root/timecapsule/pre-restore-copy-$ts.tgz -C / --ignore-failed-read $q 2>/dev/null; tar xzpf - -C / --same-owner $q && echo restored'" \
+      && echo "undo: tar xzpf /root/timecapsule/pre-restore-copy-$ts.tgz -C /   (on $box)" \
+      && echo "NEXT: syntax-check and reload the service; files added since '$label' are NOT deleted (check ./fleet.sh diff)"
+    ;;
   restore)
     [ $# -ge 3 ] || die "usage: fleet.sh restore <box> <label> <path> [path...]"
     box="$1"; shift
@@ -165,5 +221,5 @@ case "$cmd" in
     echo "Restore on $box from '$1': ${*:2}"
     read -rp "Type yes to proceed: " ok; [ "$ok" = "yes" ] || die "aborted"
     tc_remote "${TARGETS[$idx]}" restore "$@" ;;
-  *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

@@ -71,6 +71,28 @@ Accounts are changed with commands, not files. If a diff shows a new UID 0 user,
 new sudoer or a new SSH key, fix it with `userdel`, `visudo` or by editing
 `authorized_keys`, then confirm with another diff.
 
+## Rollback options, in the order to try them
+
+| # | tool | restores | survives an attacker who… |
+|---|---|---|---|
+| 1 | `./fleet.sh restore <box> <label> <path>` | files under `/etc`, `/var/www`, `/srv`, the BIND dirs, `/var/ftp`, `/root/.ssh`, from the box's own snapshot | edits files |
+| 2 | `./fleet.sh restore-copy <box> <label> <path>` | the same paths, from the copy **pulled to the jumpbox** | also deletes or edits `/root/timecapsule` on the box (run `./fleet.sh pull` after every snapshot) |
+| 3 | `./fleet.sh etckeeper restore <box> <label> <path>` | anything under `/etc`, from `/etc/.git`; a completely separate implementation | breaks or fools timecapsule itself |
+| 4 | `apt install --reinstall <package>` (via `./fleet.sh run`) | replaced binaries and library files that `debsums -c` or AIDE flag | replaces system binaries |
+| 5 | the `.bak` copy you made before each change (playbook ground rules) | that one file | — |
+| 6 | store snapshot revert (playbook section 7) | the whole VM, at a currency cost | anything, including a kernel rootkit; undoes **every** change since the snapshot, passwords included |
+
+What none of them do:
+- **They never restore accounts.** `/etc/passwd`, `shadow`, `group` and `gshadow`
+  are refused on purpose, because restoring them would revert blackteam/whiteteam
+  (R8) and every password you've rotated. Fix accounts with `userdel`, `usermod`
+  and `gpasswd -d`, and passwords from the master list.
+- **They never restore organizer tooling** (`/etc/audit`, `/etc/cloud`), per R7.
+- **They never delete files added after the snapshot,** such as a webshell. They
+  list them; delete those by hand.
+
+Every restore saves the current version first and prints how to undo it.
+
 ## Premade tools through the same runner
 
 ```

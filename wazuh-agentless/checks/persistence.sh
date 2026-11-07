@@ -10,6 +10,8 @@ echo ==UNIT-FILES==; find /etc/systemd/system -type f 2>/dev/null | sort | xargs
 echo ==PRELOAD==; cat /etc/ld.so.preload 2>/dev/null
 echo ==PAM==; grep -rhE 'pam_exec|pam_script' /etc/pam.d 2>/dev/null | sort; sha256sum /usr/lib/*/security/*.so 2>/dev/null | awk '{print $2, substr($1,1,12)}'
 echo ==STARTUP==; cat /etc/rc.local 2>/dev/null; ls -l --time-style=+%F_%T /etc/profile.d 2>/dev/null | tail -n +2
+echo ==USER-UNITS==; ls -l --time-style=+%F_%T /root/.config/systemd/user /home/*/.config/systemd/user 2>/dev/null | grep -v '^total'
+echo ==SHELL-RC==; sha256sum /root/.bashrc /root/.profile /home/*/.bashrc /home/*/.profile /home/*/.bash_profile /home/*/.bash_logout 2>/dev/null | awk '{print $2, substr($1,1,12)}'
 echo ==SUID==; find / -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null | sort
 echo ==CAPABILITIES==; getcap -r /usr /opt 2>/dev/null | sort
 echo ==KERNEL-MODULES==; awk '{print $1}' /proc/modules | sort

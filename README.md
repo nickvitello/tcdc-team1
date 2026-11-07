@@ -13,10 +13,12 @@ Preparation tools for TCDC SMC F26, November 7, 2026. Scoring: **80% service upt
 | `watchtower/vault.py` | Local password records and manual dashboard-sync attestation |
 | `firewall-opnsense.md`, `firewall-windows.md` | Manual policy review and recovery procedures |
 | `purple-team.md` | Scope, permitted attack preparation, verification, and undo workflow |
+| `opnsense-suricata.md` | Turning on OPNsense's built-in Suricata in alert-only mode, plus NetFlow for a traffic baseline |
+| `blue-team-tabletop.md` | Attack walkthrough: each likely attacker step, how we detect and fix it, their workaround, our counter |
 | `blue-team-playbook.md` | Blue-team competition-day playbook: roles, timeline, Linux/Windows/AD/MQTT hardening, Wazuh triage, incident response |
 | `linux/timecapsule.sh`, `linux/fleet.sh`, `linux/aide.sh`, `linux/etckeeper.sh` | Snapshot/diff/rollback, AIDE file integrity and git history of `/etc`, run on every Linux box from the jumpbox (see `linux/TIMECAPSULE.md`) |
 | `rotate_pass/` | PasswordRotate: Linux OS password rotation over SSH, logged to the team Sheet |
-| `wazuh-agentless/` | Local agentless Wazuh: 8 read-only SSH checks per box (optionally through sudo), log analysis and a dashboard |
+| `wazuh-agentless/` | Local agentless Wazuh: 8 read-only SSH checks per box (optionally through sudo), log analysis and a dashboard; optional full agents (`wazuh-agents.md`, only with Black Team's OK) |
 
 **Installers do not change SSH login settings, passwords, or firewall policy.** They install monitoring and capture the state that exists at installation. Review that state: a first baseline can already contain a compromise. Existing accepted baselines are preserved on reruns. A schema upgrade requires explicit `--rebaseline` / `-Rebaseline`, and archives the old evidence first.
 

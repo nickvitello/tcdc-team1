@@ -90,6 +90,15 @@ some boxes, use `-Boxes ns1,ipcam`.
 **Practice against your own VM tonight:** add `-Hosts @{ testvm = "192.168.56.10" }`
 to both commands, in place of the competition boxes.
 
+**OPNsense logs into Wazuh (optional):** `-AcceptSyslog` opens a TCP 514 syslog
+listener that accepts only OPNsense's address (`-SyslogFrom` to override).
+Re-running setup without it closes the listener. The OPNsense steps, a
+reachability test and the rollback are in `../opnsense-suricata.md`.
+
+**Full agents (optional):** `-AcceptAgents` opens the agent ports with
+password-protected enrollment. Read `wazuh-agents.md` first: agents can conflict
+with an organizer agent (R7), and need Black Team's OK.
+
 **Change how often checks run** by re-running setup with `-FastSeconds`,
 `-ActivitySeconds`, `-DiffSeconds`, `-SlowSeconds` or `-IntegritySeconds` (all in
 seconds).

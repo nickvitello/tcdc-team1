@@ -17,6 +17,15 @@
   Checks run through sudo (asks for the password once, hidden). Re-run this whenever
   that account's password is rotated, then run register.ps1 too.
 .EXAMPLE
+  .\setup.ps1 -Team 5 -User washington -AsRoot -AcceptSyslog -SyslogFrom 10.105.40.1/32
+  Also listen for syslog (TCP 514) from OPNsense, e.g. its Suricata alerts and firewall log.
+  Re-run without -AcceptSyslog to close the listener again. See opnsense-suricata.md.
+.EXAMPLE
+  .\setup.ps1 -Team 5 -User washington -AsRoot -AcceptAgents
+  Also accept full Wazuh agents (TCP 1514/1515, password-protected enrollment).
+  Read wazuh-agents.md FIRST: agents conflict with an organizer agent (R7).
+  Re-run without -AcceptAgents to close the ports again.
+.EXAMPLE
   .\setup.ps1 -Team 5 -User tester -Hosts @{ testvm = "192.168.56.10" }
   Point it at your own VM(s) instead of the competition boxes, for practice.
 #>
@@ -31,6 +40,9 @@ param(
   [ValidateRange(60,86400)][int]$IntegritySeconds = 900,  # file hashes
   [switch]$AsRoot,
   [hashtable]$Hosts,
+  [switch]$AcceptSyslog,                 # open TCP 514 for syslog (e.g. from OPNsense)
+  [switch]$AcceptAgents,                 # open TCP 1514/1515 for full Wazuh agents (see wazuh-agents.md)
+  [string]$SyslogFrom,                   # who may send: one IP/CIDR, e.g. 10.105.40.1/32
   [switch]$AllowCDrive
 )
 $ErrorActionPreference = "Stop"
@@ -87,6 +99,15 @@ $SN = Join-Path $Repo "single-node"
 foreach ($f in "docker-compose.yml", "Dockerfile.manager", "tcdc-register.sh") {
   Copy-Item -Force (Join-Path $Here $f) (Join-Path $SN $f)
 }
+# the syslog port is published only through this extra compose file, so leaving
+# -AcceptSyslog off on a later run closes it again
+$syslogCompose = Join-Path $SN "docker-compose.syslog.yml"
+"services:`n  wazuh.manager:`n    ports:`n      - `"514:514/tcp`"`n" | Set-Content -NoNewline -Encoding ascii $syslogCompose
+$agentsCompose = Join-Path $SN "docker-compose.agents.yml"
+"services:`n  wazuh.manager:`n    ports:`n      - `"1514:1514/tcp`"`n      - `"1515:1515/tcp`"`n" | Set-Content -NoNewline -Encoding ascii $agentsCompose
+$composeFiles = @("-f", "docker-compose.yml")
+if ($AcceptSyslog) { $composeFiles += @("-f", "docker-compose.syslog.yml") }
+if ($AcceptAgents) { $composeFiles += @("-f", "docker-compose.agents.yml") }
 
 # --- 5. Agentless checks into the manager config -------------------------------
 # Each checks\*.sh: drop comments/blank lines, add a marker line (so logs.sh can
@@ -148,6 +169,10 @@ if ($Hosts) {
   }
 }
 foreach ($ip in $targets.Values) { if ($ip -notmatch '^[0-9A-Za-z.-]+$') { throw "bad host '$ip'" } }
+if ($AcceptSyslog) {
+  if (-not $SyslogFrom) { $SyslogFrom = if ($Hosts) { throw "-AcceptSyslog with -Hosts needs -SyslogFrom" } else { "10.$(100 + $Team).40.1/32" } }
+  if ($SyslogFrom -notmatch '^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$') { throw "-SyslogFrom must be an IPv4 address or CIDR, e.g. 10.105.40.1/32" }
+}
 
 $argsByCheck = @{}
 foreach ($c in $checks) { $argsByCheck[$c.File] = Get-CheckArgs $c.File }
@@ -174,12 +199,25 @@ foreach ($name in $targets.Keys) {
   [void]$sb.AppendLine("    <arguments>/etc /usr/bin /usr/sbin /usr/local /var/www</arguments>")
   [void]$sb.AppendLine("  </agentless>")
 }
+if ($AcceptSyslog) {
+  [void]$sb.AppendLine("  <!-- syslog listener (setup.ps1 -AcceptSyslog); only $SyslogFrom may send -->")
+  [void]$sb.AppendLine("  <remote>")
+  [void]$sb.AppendLine("    <connection>syslog</connection>")
+  [void]$sb.AppendLine("    <port>514</port>")
+  [void]$sb.AppendLine("    <protocol>tcp</protocol>")
+  [void]$sb.AppendLine("    <allowed-ips>$SyslogFrom</allowed-ips>")
+  [void]$sb.AppendLine("  </remote>")
+}
 [void]$sb.AppendLine("  <!-- TCDC-AGENTLESS END -->")
 $sudoPw = $null
 
 $conf = [IO.Path]::Combine($SN, "config", "wazuh_cluster", "wazuh_manager.conf")
 $text = [IO.File]::ReadAllText($conf).Replace("`r`n", "`n")
 $text = [regex]::Replace($text, '(?s)\s*<!-- TCDC-AGENTLESS BEGIN.*?<!-- TCDC-AGENTLESS END -->\n?', "`n")
+# Agent enrollment always requires a password (Wazuh's default is open enrollment).
+# Harmless when -AcceptAgents is off: the enrollment port isn't published then.
+$text = $text.Replace("<use_password>no</use_password>", "<use_password>yes</use_password>")
+if ($text -notmatch "<use_password>yes</use_password>") { throw "could not require an enrollment password in $conf" }
 $at = $text.LastIndexOf("</ossec_config>")
 if ($at -lt 0) { throw "can't find </ossec_config> in $conf" }
 $text = $text.Substring(0, $at) + $sb.ToString().Replace("`r`n", "`n") + $text.Substring($at)
@@ -194,9 +232,19 @@ try {
     Run "Generating TLS certificates" { docker compose -f generate-indexer-certs.yml run --rm generator }
   }
   # --- 7. Start (or update) the stack ------------------------------------------
-  Run "Building and starting Wazuh (first time downloads ~4 GB, be patient)" { docker compose up -d --build }
+  Run "Building and starting Wazuh (first time downloads ~4 GB, be patient)" { docker compose @composeFiles up -d --build }
+  # enrollment password: generated once, kept in the work dir (outside the repo), and
+  # copied into the manager every run. Without it nobody can enroll an agent.
+  $enrollFile = Join-Path $WorkDir "agent-enrollment-password.txt"
+  if (-not (Test-Path $enrollFile)) {
+    $chars = [char[]]'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+    -join (1..24 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] }) | Set-Content -NoNewline -Encoding ascii $enrollFile
+  }
+  $enrollPw = (Get-Content -Raw $enrollFile).Trim()
+  $null = $enrollPw | docker compose @composeFiles exec -T wazuh.manager sh -c 'tr -d "\r" > /var/ossec/etc/authd.pass && chown root:wazuh /var/ossec/etc/authd.pass && chmod 640 /var/ossec/etc/authd.pass'
+  if ($LASTEXITCODE -ne 0) { throw "could not store the agent enrollment password in the manager" }
   # the manager copies its config at start-up, so restart it to pick up changes
-  Run "Restarting manager to load the agentless config" { docker compose restart wazuh.manager }
+  Run "Restarting manager to load the agentless config" { docker compose @composeFiles restart wazuh.manager }
 } finally { Pop-Location }
 
 Write-Host ""
@@ -204,5 +252,16 @@ Write-Host "Done. Next:" -ForegroundColor Green
 $hostArg = if ($Hosts) { " -Hosts <same as above>" } else { "" }
 Write-Host "  1. Store the SSH password for '$User':   .\register.ps1 -Team $Team -User $User$hostArg"
 if ($AsRoot) { Write-Host "     After any rotation of that password, re-run this script with -AsRoot AND register.ps1." -ForegroundColor Yellow }
+if ($AcceptAgents) {
+  Write-Host "  Agent ports open: TCP 1514/1515 on this machine. Enrollment password is in:" -ForegroundColor Yellow
+  Write-Host "     $enrollFile"
+  Write-Host "     Before installing any agent, follow wazuh-agents.md (check for an organizer agent FIRST, R7)." -ForegroundColor Yellow
+  Write-Host "     To close the ports: re-run this script without -AcceptAgents."
+}
+if ($AcceptSyslog) {
+  Write-Host "  Syslog listener: TCP 514 on this machine, accepting only $SyslogFrom." -ForegroundColor Yellow
+  Write-Host "     Windows may ask to allow Docker through the firewall; allow it on the network the VPN uses." -ForegroundColor Yellow
+  Write-Host "     To close it again: re-run this script without -AcceptSyslog."
+}
 Write-Host "  2. Dashboard (give it 2-3 minutes to come up): https://localhost:8443  (admin / SecretPassword)"
 Write-Host "     Your browser will warn about the self-signed certificate; that's expected."

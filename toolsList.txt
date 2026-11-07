@@ -378,9 +378,13 @@ timecapsule (ours: state snapshot + diff) — linux/timecapsule.sh in this repo
 PasswordRotate (ours: Linux password rotation) — rotate_pass/ in this repo
 aide.sh (ours: TCDC-safe AIDE config + init/check/accept, no scheduled job) — linux/aide.sh in this repo
 etckeeper.sh (ours: git history of /etc, labels, diff, guarded restore, no scheduled job) — linux/etckeeper.sh in this repo
+wazuh-agent.sh (ours: guarded install/remove of OUR full Wazuh agent; refuses if any agent exists) — linux/wazuh-agent.sh in this repo
 fleet.sh (ours: run timecapsule / any command on all Linux boxes from the jumpbox) — linux/fleet.sh in this repo
 wazuh-agentless (ours: local Wazuh, 8 read-only SSH checks per box incl. log analysis, optional sudo, no agents) — wazuh-agentless/ in this repo
 Wazuh Docker (official release used by wazuh-agentless) — https://github.com/wazuh/wazuh-docker
+
+Suricata (built into OPNsense, alert-only IDS mode; see opnsense-suricata.md) — https://github.com/OISF/suricata
+Zeek (pcap summaries) — https://github.com/zeek/zeek
 
 Defense / Blue Team - Windows
 Sysinternals Suite (Autoruns, Process Explorer, TCPView) — https://learn.microsoft.com/sysinternals/
