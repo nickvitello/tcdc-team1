@@ -11,7 +11,7 @@
 
 `.github/workflows/checks.yml` runs the Python checks on Ubuntu and Windows. `tests/windows.ps1` parses every PowerShell file using Windows PowerShell 5.1, exercises real read-only service/task/admin enumeration and the ADSI fallback, and checks snapshot comparison, archive/schema behavior, bootstrap download failures, and rejection of legacy firewall activation. Separate guarded CI smoke tests install the actual Linux/Windows watchers on disposable hosted runners, verify systemd/SYSTEM task execution, preserve accepted state on rerun, detect a harmless canary/module change, and restore the changed object. No attack operations or competition systems are involved.
 
-Both jobs, including native installation smoke tests, passed for `c2ec1c4` in [run 42330156212](https://github.com/nickvitello/tcdc-team1/actions/runs/42330156212). See subsequent commit checks for the final revision.
+Both jobs, including native installation smoke tests and the operator/SYSTEM autorun regression, passed for code revision `47a0faa` in [run 42330310036](https://github.com/nickvitello/tcdc-team1/actions/runs/42330310036). The following merge only reconciles README examples and this validation record; executable files are unchanged.
 
 CI status for each commit is authoritative; inspect its run before deployment. Full Windows 11/DC deployment, AD-domain behavior, OPNsense policy, live checker transactions, and staff/jumpbox reachability are not established by these tests. Test on disposable local images and verify the official scorer after deployment. No competition infrastructure was contacted during this preparation.
 

@@ -96,6 +96,17 @@ python3 watchtower/vault.py sync <box> <user>
 python3 watchtower/vault.py svc ftp-archive <user>
 ```
 
+The box-side reset commands are interactive. Run them on the correct box after recording the same password in the vault; the generated instructions quote the actual username for you.
+
+| Where | Example command | Prompts |
+|---|---|---|
+| Linux | `sudo passwd -- USERNAME` | Password and confirmation |
+| Windows local | `net user USERNAME *` | Hidden password and confirmation |
+| AD domain account | `net user USERNAME * /domain` | Hidden password and confirmation |
+| AD PowerShell | `$p = Read-Host -AsSecureString "New password"`, then `Set-ADAccountPassword -Identity 'USERNAME' -Reset -NewPassword $p` | One hidden prompt; no confirmation |
+
+Replace `USERNAME` with the intended account, preserve staff accounts, and update `/team/passwords` immediately after a successful reset. Prefer the vault's hidden prompt over a positional password; deleting history afterward does not guarantee removal of copies.
+
 `sync` is your attestation, not an API integration or scorer verification. The vault is plaintext. Unix files are mode 0600; on Windows use a private user-profile directory with an appropriate NTFS ACL. Hidden prompts avoid secrets in command history. Staff accounts are rejected by the reset workflow.
 
 ## Packet scope and validation
