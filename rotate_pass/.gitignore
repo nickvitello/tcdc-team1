@@ -1,0 +1,7 @@
+# secrets: never commit these
+config.json
+state.json
+passwords-log.jsonl
+service-account.json
+*.json.bak
+__pycache__/
