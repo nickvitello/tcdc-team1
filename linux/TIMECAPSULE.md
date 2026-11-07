@@ -71,6 +71,8 @@ new sudoer or a new SSH key, fix it with `userdel`, `visudo` or by editing
 ## Premade tools through the same runner
 
 ```
+./fleet.sh aide install; ./fleet.sh aide init   # AIDE baseline after hardening (TCDC-safe config in aide.sh)
+./fleet.sh aide check                            # what changed since; 'aide accept' after reviewing your own changes
 ./fleet.sh run "debsums -c"                      # files that don't match their package (replaced binaries)
 ./fleet.sh run "lynis audit system --quick"      # needs lynis installed
 ./fleet.sh run "etckeeper commit 'checkpoint'"   # needs etckeeper installed

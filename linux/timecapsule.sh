@@ -139,7 +139,7 @@ diff_caps(){
   echo "    B: $(basename "$B")"
 
   # file fingerprints: added / removed / changed, summarised by path
-  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"; trap - RETURN' RETURN
+  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"; trap - RETURN' RETURN; trap 'rm -rf "${tmp:-}"' EXIT
   awk '{print $1}' "$A/hashes.txt" > "$tmp/a"; awk '{print $1}' "$B/hashes.txt" > "$tmp/b"
   local added removed changed
   added="$(comm -13 "$tmp/a" "$tmp/b")"
@@ -175,7 +175,7 @@ restore(){
   local A; A="$(resolve "$src")" || exit 1
   [ -f "$A/backup.tgz" ] || die "capture $(basename "$A") has no backup.tgz"
 
-  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"; trap - RETURN' RETURN
+  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"; trap - RETURN' RETURN; trap 'rm -rf "${tmp:-}"' EXIT
   tar tzf "$A/backup.tgz" 2>/dev/null | sed 's#/$##' > "$tmp/members"
 
   local p rel ts saved
@@ -185,6 +185,12 @@ restore(){
   for p in "$@"; do
     [[ "$p" == /* ]] || die "use absolute paths: $p"
     rel="${p#/}"; rel="${rel%/}"
+    # Rule guards: account files hold blackteam/whiteteam passwords (R8: never change
+    # them) and every password you rotated since; /etc/audit is organizer infra (R7).
+    case "/$rel" in
+      /|/etc|/etc/passwd|/etc/shadow|/etc/group|/etc/gshadow|/etc/passwd-|/etc/shadow-|/etc/group-|/etc/gshadow-|/etc/audit|/etc/audit/*|/etc/cloud|/etc/cloud/*)
+        die "refusing to restore /$rel: it would revert accounts or touch organizer tooling (R7/R8). Restore specific files instead (e.g. /etc/ssh/sshd_config), and fix accounts with userdel/usermod." ;;
+    esac
     awk -v r="$rel" '$0==r || index($0, r"/")==1 {f=1} END{exit !f}' "$tmp/members" \
       || die "$p is not in capture $(basename "$A") (backed-up roots: $BACKUP_PATHS)"
   done

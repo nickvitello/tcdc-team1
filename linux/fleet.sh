@@ -7,6 +7,7 @@
 #   TEAM=5 ./fleet.sh list                         snapshots on every box
 #   TEAM=5 ./fleet.sh pull                         copy every box's snapshots to ./capsules/
 #   TEAM=5 ./fleet.sh restore <box> <label> <path> [path...]   roll files back on ONE box
+#   TEAM=5 ./fleet.sh aide <install|init|check|accept>   AIDE file integrity (see aide.sh)
 #   TEAM=5 ./fleet.sh run "<command>"              run a command as root on every box
 #                                                  e.g. "debsums -c", "lynis audit system --quick"
 # Options (environment variables):
@@ -20,6 +21,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TC="$HERE/timecapsule.sh"
+AIDE_SH="$HERE/aide.sh"
 ADMIN_USER="${ADMIN_USER:-washington}"
 OUT="$HERE/capsules"
 
@@ -81,11 +83,12 @@ pw_line(){ [ "${NOPASS[$1]:-0}" = 0 ] && printf '%s\n' "$FLEET_PASS"; true; }
 
 # run timecapsule on a box: script streamed in after the sudo password, CRs stripped
 # (a Windows checkout would otherwise break bash), saved to a temp file, run, deleted
-tc_remote(){
-  local t="$1"; shift
+tc_remote(){ local t="$1"; shift; script_remote "$t" "$TC" "$@"; }
+script_remote(){
+  local t="$1" script="$2"; shift 2
   local args; args="$(printf '%q ' "$@")"
   needs_pw "$t"
-  { pw_line "$t"; tr -d '\r' < "$TC"; } \
+  { pw_line "$t"; tr -d '\r' < "$script"; } \
     | sshx "$t" "sudo -S -p '' bash -c 'f=\$(mktemp); cat > \"\$f\"; bash \"\$f\" \"\$@\"; rc=\$?; rm -f \"\$f\"; exit \$rc' tc $args"
 }
 root_remote(){  # run an arbitrary command as root
@@ -113,6 +116,7 @@ do_snap(){ tc_remote "$1" snap "$3"; }
 do_list(){ tc_remote "$1" list; }
 do_diff(){ tc_remote "$1" diff "$3" "$4"; }
 do_run(){  root_remote "$1" "$3"; }
+do_aide(){ script_remote "$1" "$AIDE_SH" "$3"; }
 do_pull(){
   local t="$1" name="$2" f
   mkdir -p "$OUT" && chmod 700 "$OUT"
@@ -131,6 +135,9 @@ case "$cmd" in
   list)    each do_list ;;
   diff)    [ $# -eq 2 ] || die "usage: fleet.sh diff <A> <B|now>";    each do_diff "$1" "$2" ;;
   run)     [ $# -eq 1 ] || die 'usage: fleet.sh run "<command>"';     each do_run "$1" ;;
+  aide)    [[ "${1:-}" =~ ^(install|init|check|accept)$ ]] || die "usage: fleet.sh aide <install|init|check|accept>"
+           [ -f "$AIDE_SH" ] || die "aide.sh must sit next to fleet.sh"
+           each do_aide "$1" ;;
   pull)    each do_pull ;;
   restore)
     [ $# -ge 3 ] || die "usage: fleet.sh restore <box> <label> <path> [path...]"
@@ -140,5 +147,5 @@ case "$cmd" in
     echo "Restore on $box from '$1': ${*:2}"
     read -rp "Type yes to proceed: " ok; [ "$ok" = "yes" ] || die "aborted"
     tc_remote "${TARGETS[$idx]}" restore "$@" ;;
-  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
