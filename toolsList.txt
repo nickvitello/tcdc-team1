@@ -359,3 +359,27 @@ Team Infrastructure (additional)
 GZCTF — https://github.com/GZTimeWalker/GZCTF
 ctfcli (CTFd CLI) — https://github.com/CTFd/ctfcli
 picoCTF platform — https://github.com/picoCTF/picoCTF
+
+Defense / Blue Team - Linux
+Lynis (hardening audit) — https://github.com/CISOfy/lynis
+AIDE (file integrity, apt: aide) — https://github.com/aide/aide
+debsums (verify package files, apt: debsums) — https://salsa.debian.org/debian/debsums
+etckeeper (/etc under git, apt: etckeeper) — https://etckeeper.branchable.com
+rkhunter (rootkit check, apt: rkhunter) — https://sourceforge.net/projects/rkhunter/
+chkrootkit (rootkit check, apt: chkrootkit) — https://www.chkrootkit.org
+php-malware-finder (webshell scan) — https://github.com/jvoisin/php-malware-finder
+YARA — https://github.com/VirusTotal/yara
+ssh-audit — https://github.com/jtesta/ssh-audit
+osquery — https://github.com/osquery/osquery
+Mosquitto clients (MQTT testing, apt: mosquitto-clients) — https://mosquitto.org
+MQTT Explorer — https://github.com/thomasnordquist/MQTT-Explorer
+LinPEAS / pspy (defensive use on our own boxes) — listed under Network / Pentesting
+timecapsule (ours: state snapshot + diff) — linux/timecapsule.sh in this repo
+chronolock (ours: Linux password rotation) — chronolock/ in this repo
+
+Defense / Blue Team - Windows
+Sysinternals Suite (Autoruns, Process Explorer, TCPView) — https://learn.microsoft.com/sysinternals/
+HardeningKitty — https://github.com/scipag/HardeningKitty
+Hayabusa (event log triage) — https://github.com/Yamato-Security/hayabusa
+Chainsaw (event log triage) — https://github.com/WithSecureLabs/chainsaw
+DeepBlueCLI — https://github.com/sans-blue-team/DeepBlueCLI
