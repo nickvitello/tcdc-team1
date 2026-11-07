@@ -1,143 +1,62 @@
-# TCDC Team 1 - Windows hardening (AD 2025 / Win11 MQTT). Idempotent. Run as Administrator.
-# Usage: powershell -ep bypass -File harden.ps1 -Box mqtt [-ScoredPorts 1883] [-EnableDefaultDeny] [-Rebaseline]
-# Does NOT change passwords (funnel those through the vault to keep /team/passwords in sync).
-# Does NOT delete users/accounts (R8). Reports + baselines; surgical changes only.
-#
-# FIREWALL (review #2): default-deny is OFF unless you pass -EnableDefaultDeny. By default
-# this only ENABLES the firewall and stages ALLOW rules for mgmt + scored ports, leaving the
-# default inbound action unchanged so it CANNOT lock out a scored service or your RDP/WinRM.
-# BASELINE (review #11): first run captures the accepted baseline; re-runs keep it and write a
-# timestamped forensic snapshot instead. Pass -Rebaseline to deliberately accept current state.
+# Audit, private baseline, logging, and watcher installation. Firewall/SSH/accounts unchanged.
 param(
-  [string]$Box = $env:COMPUTERNAME,
-  [int[]]$ScoredPorts = @(),
-  [int[]]$MgmtPorts = @(3389,5985,445,135),
-  [switch]$EnableDefaultDeny,
-  [switch]$Rebaseline
+  [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')][string]$Box=$env:COMPUTERNAME,
+  [switch]$Rebaseline,
+  # Legacy switches fail explicitly BEFORE any host changes; policy changes now require manual review.
+  [switch]$EnableFirewall,[switch]$EnableDefaultDeny,
+  [int[]]$ScoredPorts=@(),[int[]]$ScoredUdpPorts=@(),[int[]]$MgmtPorts=@()
 )
-$ErrorActionPreference = "Continue"
-$BK = "C:\tcdc-baseline"; New-Item -ItemType Directory -Force -Path $BK | Out-Null
-$ts = Get-Date -Format "yyyyMMdd-HHmmss"
-$log = "$BK\harden-$ts.log"
-function Log($m){ $l="[{0}] {1}" -f (Get-Date -Format HH:mm:ss),$m; $l | Tee-Object -FilePath $log -Append }
-
-Log "=== TCDC Windows harden box=$Box (DefaultDeny=$EnableDefaultDeny Rebaseline=$Rebaseline) ==="
-
-# --- snapshot helpers (used for baseline AND forensic) ---
-function Snap-Services($path){
-  Get-CimInstance Win32_Service | Select-Object Name,PathName,StartName,StartMode,State |
-    Export-Csv $path -NoTypeInformation
+$ErrorActionPreference='Stop'
+if($EnableFirewall -or $EnableDefaultDeny){ throw 'Automatic firewall activation removed. See firewall-windows.md; no changes made.' }
+$identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+if(-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){ throw 'Run as Administrator' }
+$selfDir=$PSScriptRoot
+foreach($name in 'common.ps1','watch-agent.ps1','ad-harden.ps1'){
+  if(-not (Test-Path (Join-Path $selfDir $name))){ throw "Missing module $name; nothing installed" }
 }
-function Snap-Tasks($path){
-  Get-ScheduledTask | ForEach-Object {
-    $t=$_; $a=$t.Actions | Select-Object -First 1
-    [pscustomobject]@{
-      Id      = $t.TaskPath + $t.TaskName
-      Exec    = $a.Execute
-      Args    = $a.Arguments
-      RunAs   = $t.Principal.UserId
-      State   = $t.State
-    }
-  } | Export-Csv $path -NoTypeInformation
+. (Join-Path $selfDir 'common.ps1')
+$BK='C:\tcdc-baseline'
+Protect-TcdcDirectory $BK
+$ts=Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+$log=Join-Path $BK "harden-$ts.log"
+function Log($message){ "[$(Get-Date -Format HH:mm:ss)] $message" | Tee-Object -FilePath $log -Append }
+$baseline=Join-Path $BK 'integrity.json'
+$firstRun=-not (Test-Path $baseline)
+$legacy=@(Get-ChildItem $BK -Filter '*.base.*').Count -gt 0
+if($firstRun -and $legacy -and -not $Rebaseline){ throw 'Old baseline preserved. Review prior state, then run -Rebaseline. Watcher not replaced.' }
+if(-not $firstRun -and -not $Rebaseline){ $accepted=Read-TcdcBaseline $baseline }
+if($Rebaseline){ Log ("Previous accepted evidence archived: " + (Backup-TcdcBaseline $BK)) }
+Log "=== TCDC audit/install box=$Box ==="
+Log 'Firewall is audit-only. No profiles, defaults, or rules are changed.'
+Get-NetFirewallProfile | ForEach-Object { Log ("{0}: Enabled={1} Inbound={2} Outbound={3}" -f $_.Name,$_.Enabled,$_.DefaultInboundAction,$_.DefaultOutboundAction) }
+Log 'Packet admins: washington, kennedy, teddy, lincoln, ross. Review identities and effective rights, not counts.'
+Log 'Retain all packet users; never change blackteam/whiteteam. AD accounts are reported by ad-harden.ps1.'
+if((Get-CimInstance Win32_OperatingSystem).ProductType -ne 2){
+  Get-LocalUser | ForEach-Object { Log ("User {0}, Enabled={1}" -f $_.Name,$_.Enabled) }
 }
-function Snap-RunKeys($path){
-  $out=@()
-  $hklm=@("HKLM:\Software\Microsoft\Windows\CurrentVersion\Run","HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce")
-  foreach($k in $hklm){ if(Test-Path $k){ (Get-Item $k).Property | ForEach-Object { $out += "$k :: $_ = $((Get-ItemProperty $k).$_)" } } }
-  # enumerate EVERY loaded user hive (SYSTEM watcher sees HKU, not the operator's HKCU) - review #9
-  Get-ChildItem Registry::HKEY_USERS -ErrorAction SilentlyContinue | ForEach-Object {
-    $run = "Registry::$($_.Name)\Software\Microsoft\Windows\CurrentVersion\Run"
-    if(Test-Path $run){ (Get-Item $run).Property | ForEach-Object { $p=$_;
-      $out += "$run :: $p = $((Get-ItemProperty $run).$p)" } }
-  }
-  $out | Out-File $path
+# Report drift before replacing our module files; preserve accepted state on ordinary reruns.
+if(-not $firstRun -and -not $Rebaseline){
+  $current=Get-TcdcSnapshot $BK
+  Write-TcdcJson $current (Join-Path $BK "forensic-$ts.json")
+  Compare-TcdcSnapshot $accepted $current | ForEach-Object { Log $_ }
 }
-
-# robust local-admins enum (Get-LocalGroupMember throws Win32Internal on orphaned SIDs in PS5.1)
-function Get-AdminMembers {
-  try { return Get-LocalGroupMember -Group 'Administrators' -ErrorAction Stop | Select-Object Name,PrincipalSource }
-  catch {
-    net localgroup Administrators 2>$null |
-      Where-Object { $_ -and $_ -notmatch '^(Alias name|Comment|Members|-----|The command)' } |
-      ForEach-Object { [pscustomobject]@{ Name = $_.Trim(); PrincipalSource = 'net-fallback' } } |
-      Where-Object { $_.Name }
-  }
+foreach($name in 'common.ps1','watch-agent.ps1','ad-harden.ps1'){
+  $source=Join-Path $selfDir $name; $destination=Join-Path $BK $name
+  if([IO.Path]::GetFullPath($source) -ne [IO.Path]::GetFullPath($destination)){ Copy-Item $source $destination -Force }
 }
-
-# 1. Baseline (accepted on first run; forensic-only on re-runs unless -Rebaseline)
-$firstRun = -not (Test-Path "$BK\services.base.csv")
+# Create only when missing. Never quietly rewrite a changed task into the accepted baseline.
+$task=Get-ScheduledTask -TaskName 'TCDC-Watch' -TaskPath '\' -ErrorAction SilentlyContinue
+if(-not $task){
+  $action=New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$BK\watch-agent.ps1`" -Box $Box"
+  $trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 2)
+  $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+  Register-ScheduledTask -TaskName 'TCDC-Watch' -TaskPath '\' -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -User 'SYSTEM' | Out-Null
+}
 if($firstRun -or $Rebaseline){
-  Log "[1] capturing accepted baseline -> $BK\*.base.*"
-  try { Get-AdminMembers |
-        Export-Csv "$BK\admins.base.csv" -NoTypeInformation } catch { Log "  (not workgroup local-admins)" }
-  Snap-Services "$BK\services.base.csv"
-  Snap-Tasks "$BK\schtasks.base.csv"
-  Snap-RunKeys "$BK\runkeys.base.txt"
-  Log "    baselined admins/services(+path)/schtasks(+actions)/runkeys(all hives)"
-} else {
-  Log "[1] baseline EXISTS -> forensic snapshot only ($ts). Pass -Rebaseline to replace accepted baseline."
-  try { Get-AdminMembers |
-        Export-Csv "$BK\admins.forensic-$ts.csv" -NoTypeInformation } catch {}
-  Snap-Services "$BK\services.forensic-$ts.csv"
-  Snap-Tasks "$BK\schtasks.forensic-$ts.csv"
-  Snap-RunKeys "$BK\runkeys.forensic-$ts.txt"
+  Write-TcdcJson (Get-TcdcSnapshot $BK) $baseline
+  Log 'Baseline captured after installation. Initial state must be reviewed for pre-existing compromise.'
 }
-
-# 2. Report local admins (backdoor accounts)
-Log "[2] local Administrators members:"
-try { Get-AdminMembers | ForEach-Object { Log ("    " + $_.Name) } } catch {}
-
-# 3. Report non-standard scheduled tasks + Run keys (C2 persistence)
-Log "[3] scheduled tasks NOT under \Microsoft\ (review):"
-Get-ScheduledTask | Where-Object { $_.TaskPath -notlike "\Microsoft\*" -and $_.TaskPath -ne "\" } |
-  ForEach-Object { Log ("    " + $_.TaskPath + $_.TaskName + "  [" + $_.State + "]") }
-Log "[3b] Run-key autoruns:"
-Get-Content "$BK\runkeys.base.txt" -ErrorAction SilentlyContinue | ForEach-Object { Log ("    " + $_) }
-
-# 4. Listening ports (review for 4444/beacon)
-Log "[4] listeners:"
-Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-  Select-Object LocalAddress,LocalPort,OwningProcess | Sort-Object LocalPort -Unique |
-  ForEach-Object { Log ("    :" + $_.LocalPort + " pid=" + $_.OwningProcess) }
-
-# 5. Enable auditing / logging (defense visibility) - safe, reversible
-Log "[5] enabling audit logging"
-auditpol /set /category:"Logon/Logoff" /success:enable /failure:enable | Out-Null
-auditpol /set /category:"Account Logon" /success:enable /failure:enable | Out-Null
-auditpol /set /subcategory:"Process Creation" /success:enable | Out-Null
-wevtutil sl Security /ms:134217728 2>$null
-Log "    audit policy + Security log size set"
-
-# 6. Firewall - FAIL-SAFE (review #2): no default-deny unless explicitly asked
-Log "[6] firewall"
-cmd /c "netsh advfirewall export `"$BK\firewall-$ts.wfw`"" | Out-Null
-Log "    exported current policy -> $BK\firewall-$ts.wfw (rollback: netsh advfirewall import that file)"
-Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True -ErrorAction SilentlyContinue
-$allowPorts = @($MgmtPorts + $ScoredPorts | Select-Object -Unique)
-foreach($p in $allowPorts){
-  New-NetFirewallRule -DisplayName "TCDC-allow-tcp-$p" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $p -ErrorAction SilentlyContinue | Out-Null
-}
-Log ("    staged inbound ALLOW rules for: " + ($allowPorts -join ", "))
-if($EnableDefaultDeny -and $ScoredPorts.Count -gt 0){
-  Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction Block -DefaultOutboundAction Allow -ErrorAction SilentlyContinue
-  Log "    DEFAULT-DENY inbound ENABLED. VALIDATE scored service + RDP/WinRM externally NOW."
-  Log "    if anything broke: netsh advfirewall import `"$BK\firewall-$ts.wfw`""
-} else {
-  Log "    default inbound UNCHANGED (no lockout). To default-deny: -ScoredPorts <p> -EnableDefaultDeny after confirming allow rules."
-}
-
-# 7. Install drift watch-agent scheduled task (every 2 min)
-Log "[7] install watch-agent scheduled task"
-$selfDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$agent = Join-Path $selfDir "watch-agent.ps1"
-if(Test-Path $agent){
-  Copy-Item $agent "$BK\watch-agent.ps1" -Force
-  $act = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ep bypass -File `"$BK\watch-agent.ps1`" -Box $Box"
-  $trg = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)
-  Register-ScheduledTask -TaskName "TCDC-Watch" -Action $act -Trigger $trg -RunLevel Highest -Force -User "SYSTEM" | Out-Null
-  if(Get-ScheduledTask -TaskName "TCDC-Watch" -ErrorAction SilentlyContinue){ Log "    TCDC-Watch task registered (2 min)" }
-  else { Log "    !! TCDC-Watch registration not confirmed - run watch-agent manually" }
-} else { Log "    !! watch-agent.ps1 not found alongside; copy manually" }
-
-Log "=== harden done. Baselines in $BK ==="
-Log "NEXT (via vault): rotate default passwords; AD -> run ad-harden.ps1; mirror to /team/passwords"
+# Verify task state without assuming a successful registration proves execution.
+if((Get-ScheduledTask -TaskName 'TCDC-Watch' -TaskPath '\').State -eq 'Disabled'){ throw 'TCDC-Watch is disabled; review task before enabling' }
+Start-ScheduledTask -TaskName 'TCDC-Watch' -TaskPath '\'
+Log "Watcher started. Check $BK\drift.log and Task Scheduler LastTaskResult. Baseline unchanged on ordinary reruns."

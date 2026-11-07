@@ -1,79 +1,110 @@
 # TCDC Team 1 Toolkit
 
-Defensive tooling for TCDC SMC F26 (attack/defense, Sat Nov 7 2026). Public per rule R20.
-All tools are plain scripts — **no AI, no network callbacks to us** (R21/R23 compliant).
-Scoring is 80% uptime + 20% injects, so everything here serves **keep-services-up + catch-persistence**.
+Preparation tools for TCDC SMC F26, November 7, 2026. Scoring: **80% service uptime, 20% injects**. The official packet permits reversible purple teaming; see [the attack playbook](purple-team.md). `toolsList.txt` is a reference catalog, not a list of installed, approved, or tested tools.
 
-> **Setup once:** replace `nickvitello` everywhere with the real GitHub owner:
-> `grep -rl nickvitello . | xargs sed -i '' 's/nickvitello/youruser/g'` (macOS) then push.
+## What runs where
 
-## What's here
-| tool | runs where | does |
-|------|-----------|------|
-| `boot.sh` + `linux/` | each Linux box | baseline, audit keys/sudo/services, harden sshd, install drift watcher |
-| `boot.ps1` + `windows/` | each Windows box | baseline admins/tasks/runkeys, audit, enable logging, firewall, drift watcher |
-| `windows/ad-harden.ps1` | the DC only | surgical AD audit (SPNs, admin groups); `-Apply` for SMBv1-off + audit |
-| `watchtower/monitor.py` | your laptop (over VPN) | poll all 8 services q15s, live dashboard, Discord alert, password vault |
-| `watchtower/vault.py` | your laptop | the ONE funnel for password changes (keeps /team/passwords in sync) |
-| `firewall-opnsense.md` | network lead | OPNsense playbook (no script — it's GUI) |
+| Component | Purpose |
+|---|---|
+| `linux/harden.sh` | Local account audit, private file-integrity baseline, systemd watcher installation |
+| `windows/harden.ps1` | Local account/firewall audit, private baseline, scheduled watcher installation |
+| `windows/ad-harden.ps1` | DC group baseline and drift audit; optional explicit SMBv1/audit changes |
+| `watchtower/monitor.py` | Service protocol checks and local dashboard; never a scorer guarantee |
+| `watchtower/vault.py` | Local password records and manual dashboard-sync attestation |
+| `firewall-opnsense.md`, `firewall-windows.md` | Manual policy review and recovery procedures |
+| `purple-team.md` | Scope, permitted attack preparation, verification, and undo workflow |
 
-## Roles & the EXACT commands to paste (Discord-ready)
-**Everyone runs their box one-liner in the first 10 minutes. Nick starts Watchtower.**
+**Installers do not change SSH login settings, passwords, or firewall policy.** They install monitoring and capture the state that exists at installation. Review that state: a first baseline can already contain a compromise. Existing accepted baselines are preserved on reruns. A schema upgrade requires explicit `--rebaseline` / `-Rebaseline`, and archives the old evidence first.
 
-### Nick — Ops (laptop, over VPN)
-```
-git clone https://github.com/nickvitello/tcdc-team1 && cd tcdc-team1/watchtower
-cp config.example.json config.json   # edit: set dns query name (webhook optional; see R23 note)
-python3 monitor.py                    # open http://127.0.0.1:8787
-```
+## Install from a reviewed revision
 
-### Linux-A — ssh-workstation + artifactorium
-```
-curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s ssh-workstation
-curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s artifactorium
+Prefer staging a complete checkout via the permitted access path. Pin the same reviewed commit for every box; do not mix modules from different revisions. Do not log into personal GitHub accounts on competition infrastructure.
+
+```sh
+# Preparation, on your laptop:
+git clone https://github.com/nickvitello/tcdc-team1
+cd tcdc-team1
+git checkout <reviewed-commit-sha>
+python3 tests/regression_round2.py
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-### Linux-B — ns1 (DNS) + ftp-archive
-```
-curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s ns1
-curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s ftp-archive
+On an in-scope Linux box, after staging `linux/` together:
+
+```sh
+sudo bash linux/harden.sh ssh-workstation
+# Use ns1, ftp-archive, artifactorium, or ipcam as appropriate.
+sudo /usr/local/sbin/tcdc-watch
+sudo tail /root/tcdc-baseline/drift.log
 ```
 
-### Network/cloud — opnsense (follow firewall-opnsense.md) + ipcam
-```
-curl -sSL https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.sh | sudo bash -s ipcam
+Requires Python 3, Bash, systemd, and coreutils on the documented Ubuntu boxes. It writes local snapshots under `/root/tcdc-baseline`, installs two watcher files and a service/timer, and checks every minute. File bytes, modes, owners, symlink destinations and regular-file target bytes are compared. Directory symlink destinations are recorded, but arbitrary trees outside the configured roots are not recursively inventoried. This is a drift detector, not comprehensive endpoint protection. It does not replace or modify Wazuh/auditd.
+
+On Windows, stage **all four files in `windows/` together**, then use an Administrator Windows PowerShell:
+
+```powershell
+& .\windows\harden.ps1 -Box mqtt
+# On the DC instead:
+& .\windows\harden.ps1 -Box ad
+& C:\tcdc-baseline\ad-harden.ps1
+Get-Content C:\tcdc-baseline\drift.log -Tail 30
+Get-ScheduledTaskInfo -TaskName TCDC-Watch
 ```
 
-### Windows lead — AD DC + MQTT (run in an Admin PowerShell)
+The Windows watcher runs as SYSTEM every two minutes. It compares administrator SIDs, service configuration, exported scheduled-task definitions, loaded-user Run/RunOnce keys, and monitor-module hashes. AD group additions/removals and collection failures are reported. Unloaded user hives are outside this coverage. An attacker who disables the watcher can prevent its own alerts: check task/timer health independently.
+
+`boot.sh` and `boot.ps1` remain download helpers. Set `TCDC_REF` (Linux) or `$Ref` (PowerShell) to a reviewed SHA and fetch the bootstrap at that **same SHA**. They default to `main` for compatibility; a local pinned checkout is the documented deployment path. Windows uses native PowerShell script invocation, with no `powershell.exe -File` array boundary.
+
+## Review accounts by identity
+
+The packet lists admins `washington`, `kennedy`, `teddy`, `lincoln`, `ross`; employees `streep`, `franklin`, `parks`, `armstrong`, `hamilton`, `mlk`, `tubman`, `manziel`, `deniro`, `bush`. Built-in/service/staff accounts can also exist. Five named admins plus ten employees does **not** mean every machine should contain exactly five administrator-group entries and ten enabled users. Audit names and effective rights, not only totals. Do not delete packet users; never change, disable, or remove `blackteam` or `whiteteam`.
+
+Before accepting a new baseline, review current drift and the preserved evidence. Rebaseline only when the specific current state is approved:
+
+```sh
+sudo bash linux/harden.sh ssh-workstation --rebaseline
 ```
-# MQTT (Win11):
-iex (irm https://raw.githubusercontent.com/nickvitello/tcdc-team1/main/boot.ps1)
-# AD DC (Win2025): run boot.ps1, then audit, then apply:
-powershell -ep bypass -File $env:TEMP\tcdc\ad-harden.ps1          # report
-powershell -ep bypass -File $env:TEMP\tcdc\ad-harden.ps1 -Apply   # safe changes
+```powershell
+& .\windows\harden.ps1 -Box mqtt -Rebaseline
+# Separate acceptance for AD group membership:
+& C:\tcdc-baseline\ad-harden.ps1 -Rebaseline
 ```
 
-## Password rule (read twice — this is where teams lose uptime)
-NEVER change a password by hand. Always:
+## Watchtower and passwords
+
+The packet says to use the provided jumpbox for infrastructure access. Use only the staff-approved access path; do not assume direct laptop-to-service VPN routing is available or permitted. Watchtower needs network access to the eight listed endpoints; running it on a laptop is conditional on that access being allowed. Do not harden the jumpbox or use it to host attack infrastructure.
+
+```sh
+cd watchtower
+cp config.example.json config.json
+# Set the actual DNS query and service expectations; verify addresses against staff topology.
+python3 monitor.py
+# Dashboard: http://127.0.0.1:8787 (contains local passwords; do not expose its bind address).
 ```
-python3 watchtower/vault.py set <box> <user> '<newpass>'            # linux
-python3 watchtower/vault.py set <box> <user> '<newpass>' --win      # windows local
-python3 watchtower/vault.py set <box> <user> '<newpass>' --ad       # AD account
-# it prints the box command. run it. update /team/passwords. then:
+
+Seven scored targets plus OPNsense reachability are configured. HTTP without an expected body and SSH banners show reachability only. LDAP anonymous refusal is degraded, not proof credentials work. DNS truncation is reported as unverified/down; there is no TCP fallback. No check substitutes for the official scorer's transactions. Webhooks should remain empty: host-derived data export needs staff authorization under R23.
+
+From the repository root:
+
+```sh
+python3 watchtower/vault.py set <box> <user>        # hidden password prompt; Linux reset instruction
+python3 watchtower/vault.py set <box> <user> --win  # local Windows
+python3 watchtower/vault.py set <box> <user> --ad   # AD
+# Run the printed reset command on the correct box, then update /team/passwords manually:
 python3 watchtower/vault.py sync <box> <user>
+# Monitor service credentials are separate; update them when that credential changes:
+python3 watchtower/vault.py svc ftp-archive <user>
 ```
-Watchtower's vault tab flags anything NOT synced in red.
 
-## Drift / persistence detection
-Both watch-agents re-check their baseline on a timer (Linux 60s, Windows 2min) and alert on:
-new authorized_keys, new UID0 user, new/changed services, new systemd timers / scheduled tasks,
-new Run-key autoruns, and listeners on common C2 ports (4444/5555/9001/1337/31337) — the
-Metasploit/Sliver footprint. Alerts go to a LOCAL log (`/root/tcdc-baseline/drift.log`, `C:\tcdc-baseline\drift.log`). A `TCDC_WEBHOOK` hook exists but is OFF and NOT recommended: enabling it exports host-derived data (paths, account/service names, listeners) off-box, which R23 does not exempt. Do not enable without explicit staff approval.
+`sync` is your attestation, not an API integration or scorer verification. The vault is plaintext. Unix files are mode 0600; on Windows use a private user-profile directory with an appropriate NTFS ACL. Hidden prompts avoid secrets in command history. Staff accounts are rejected by the reset workflow.
 
-## Rules compliance
-- Scoped to our 8 boxes only (R6). No attacks on competition infra / test box (R7/R9).
-- No DoS/ARP spoof (R19). Tools report to a LOCAL log only; off-box webhook OFF by default (R23).
-- Tested in good faith pre-event on local VMs (R24). Free + public (R20). No AI at runtime (R21).
+## Packet scope and validation
 
-## Submit before Sat 08:00
-Push public, then paste the repo URL into the TCDC **Tool Links** form.
+Source: **TCDC SMC F26 Official Packet**, local Nov 3 copy, pp. 9–16. It lists eight topology boxes (seven scored services and OPNsense) and a protected access jumpbox. Official Discord updates have equal authority; reconcile any announced changes with Black Team before acting. No later nine-box update was supplied for this audit.
+
+- R6–R9: only the listed boxes; staff users, Wazuh/auditd, guest tools, dashboards and other infrastructure are out of scope for attack.
+- R10: hands-on periods only, subject to staff updates.
+- R11–R19: reversible purple teaming; no lockouts, destructive loss, infrastructure impersonation, DoS, or ARP spoofing. No C2 on the jumpbox.
+- R20–R25: public custom tools submitted through Tool Links; free tools, no AI use during competition; no artifact/data export except screenshots/passwords; test outside competition infrastructure; no personal accounts on infrastructure.
+
+CI runs offline Python/Bash fixtures on Ubuntu and Python plus PowerShell 5.1 parsing/helper/bootstrap fixtures on Windows. It does not test a full Windows 11/DC/OPNsense deployment or the competition network. See [VALIDATION.md](VALIDATION.md) for checks and limits. Submit the public repository link through Tool Links before use; publication alone is not submission or approval.

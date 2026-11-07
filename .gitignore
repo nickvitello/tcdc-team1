@@ -10,3 +10,6 @@ __pycache__/
 .DS_Store
 config.json
 .claude/
+
+.vault.lock
+.vault.*.tmp

@@ -13,6 +13,8 @@ Config: config.json (targets, team X, webhook). Secrets: vault.json (gitignored)
 """
 import json, os, socket, struct, threading, time, traceback, ftplib, html
 import urllib.request
+import urllib.parse
+import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -72,10 +74,18 @@ def c_tcp(t):
     s = socket.create_connection((t["host"], t["port"]), timeout=4); s.close()
     return True, "tcp open", True
 
+class ScopedRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old, new = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+        if (new.scheme, new.hostname, new.port) != (old.scheme, old.hostname, old.port):
+            raise ValueError("HTTP redirect leaves configured origin")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def c_http(t):
     url = "http://%s:%d%s" % (t["host"], t.get("port", 80), t.get("path", "/"))
     req = urllib.request.Request(url, headers={"User-Agent": "tcdc-watch"})
-    with urllib.request.urlopen(req, timeout=5) as r:
+    with urllib.request.build_opener(urllib.request.ProxyHandler({}), ScopedRedirect()).open(req, timeout=5) as r:
         body = r.read(8192).decode("latin1", "replace"); code = r.getcode()
     exp = t.get("expect", "")
     if code >= 500: return False, "HTTP %d" % code, False
@@ -86,35 +96,124 @@ def c_http(t):
 
 def c_ssh(t):
     s = socket.create_connection((t["host"], t["port"]), timeout=4)
-    s.settimeout(4); banner = s.recv(64).decode("latin1", "replace"); s.close()
+    try:
+        s.settimeout(4); banner = s.recv(64).decode("latin1", "replace")
+    finally:
+        s.close()
     return (banner.startswith("SSH-"), "banner=%r" % banner.strip()[:24], True)
 
 def c_ftp(t):
     cred = vault().get("services", {}).get(t.get("cred", ""), {})
     user = cred.get("user", "anonymous"); pw = cred.get("pass", "anon@tcdc")
-    f = ftplib.FTP(); f.connect(t["host"], t.get("port", 21), timeout=5)
-    f.login(user, pw); f.nlst(); f.quit()
+    f = ftplib.FTP()
+    try:
+        f.connect(t["host"], t.get("port", 21), timeout=5)
+        f.login(user, pw); f.nlst(); f.quit()
+    finally:
+        f.close()
     return True, "login+list ok (%s)" % user, False
 
+def _dns_name(data, off):
+    """Decode RFC 1035 labels with bounded, backwards-only compression pointers."""
+    labels, seen, end = [], set(), None
+    while True:
+        if off >= len(data) or off in seen:
+            raise ValueError("invalid/cyclic name")
+        seen.add(off)
+        size = data[off]
+        if size & 0xC0 == 0xC0:
+            if off + 1 >= len(data):
+                raise ValueError("short pointer")
+            target = ((size & 0x3F) << 8) | data[off + 1]
+            if target < 12 or target >= off:
+                raise ValueError("invalid pointer target")
+            if end is None: end = off + 2
+            off = target
+            continue
+        if size & 0xC0:
+            raise ValueError("invalid label type")
+        off += 1
+        if size == 0:
+            if sum(len(x) + 1 for x in labels) + 1 > 255:
+                raise ValueError("name too long")
+            return tuple(labels), end if end is not None else off
+        if off + size > len(data):
+            raise ValueError("short label")
+        labels.append(data[off:off + size].lower())
+        off += size
+
+
+def _dns_response(data, txid, query, expect_answer=True, expect_ip=None):
+    try:
+        if len(data) < 12: raise ValueError("short header")
+        ident, flags, qd, an, ns, ar = struct.unpack(">6H", data[:12])
+        if ident != txid: raise ValueError("transaction mismatch")
+        if not flags & 0x8000 or flags & 0x7800: raise ValueError("not a query response")
+        if flags & 0x0200: raise ValueError("truncated response; health unverified")
+        if flags & 15: return False, "dns rcode=%d" % (flags & 15), False
+        if qd != 1: raise ValueError("expected one question")
+        qname, off = _dns_name(data, 12)
+        if qname != query or data[off:off + 4] != b"\x00\x01\x00\x01":
+            raise ValueError("question mismatch")
+        off += 4
+        records = []
+        for i in range(an + ns + ar):
+            owner, off = _dns_name(data, off)
+            if off + 10 > len(data): raise ValueError("short RR header")
+            kind, cls, ttl, size = struct.unpack(">HHIH", data[off:off + 10])
+            off += 10
+            end = off + size
+            if end > len(data): raise ValueError("short RR data")
+            value = data[off:end]
+            if kind == 1 and size != 4: raise ValueError("invalid A length")
+            if kind == 5:
+                value, consumed = _dns_name(data, off)
+                if consumed != end: raise ValueError("invalid CNAME length")
+            if i < an: records.append((owner, kind, cls, value))
+            off = end
+        if off != len(data): raise ValueError("trailing bytes")
+        current, visited = query, set()
+        addresses = []
+        while current not in visited:
+            visited.add(current)
+            addresses = [socket.inet_ntoa(v) for n, k, c, v in records
+                         if n == current and k == 1 and c == 1]
+            aliases = {v for n, k, c, v in records if n == current and k == 5 and c == 1}
+            if addresses:
+                if aliases: raise ValueError("A and CNAME conflict")
+                break
+            if not aliases: break
+            if len(aliases) != 1: raise ValueError("conflicting aliases")
+            current = aliases.pop()
+        else:
+            raise ValueError("CNAME cycle")
+        if expect_ip and expect_ip not in addresses:
+            return False, "dns expected A address missing", False
+        if expect_answer and not addresses:
+            return False, "dns no matching A answer", False
+        return True, "dns A=%s" % (",".join(addresses) or "none requested"), not bool(addresses)
+    except (ValueError, struct.error, OSError) as ex:
+        return False, "dns malformed (%s)" % ex, False
+
+
 def c_dns(t):
-    q = t.get("query", "example.com")
-    txid = 0x1234
-    header = struct.pack(">H", txid) + b"\x01\x00" + struct.pack(">HHHH", 1, 0, 0, 0)
-    qn = b"".join(struct.pack("B", len(p)) + p.encode() for p in q.split(".")) + b"\x00"
-    pkt = header + qn + struct.pack(">HH", 1, 1)
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
-    s.sendto(pkt, (t["host"], t.get("port", 53)))
-    data, src = s.recvfrom(1024); s.close()
-    if len(data) < 12: return False, "dns short", False
-    rtxid = struct.unpack(">H", data[0:2])[0]
-    rcode = data[3] & 0x0F
-    ancount = struct.unpack(">H", data[6:8])[0]
-    if rtxid != txid: return False, "dns txid-mismatch", False
-    if src[0] != t["host"]: return False, "dns wrong-src %s" % src[0], False
-    if rcode != 0: return False, "rcode=%d" % rcode, False
-    if t.get("expect_answer", True) and ancount == 0:
-        return False, "rcode=0 but 0 answers", False  # NXRECORD-ish; record gone
-    return True, "rcode=0 ancount=%d" % ancount, False
+    labels = tuple(p.encode("idna").lower() for p in t.get("query", "example.com").rstrip(".").split("."))
+    if any(not p or len(p) > 63 for p in labels) or sum(len(p) + 1 for p in labels) + 1 > 255:
+        raise ValueError("invalid DNS query name")
+    txid = secrets.randbits(16)
+    packet = struct.pack(">6H", txid, 0x0100, 1, 0, 0, 0)
+    packet += b"".join(bytes([len(p)]) + p for p in labels) + b"\0\0\1\0\1"
+    host = socket.gethostbyname(t["host"])
+    port = t.get("port", 53)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.settimeout(4)
+        s.sendto(packet, (host, port))
+        data, source = s.recvfrom(65535)
+    finally:
+        s.close()
+    if source != (host, port): return False, "dns wrong source", False
+    return _dns_response(data, txid, labels, t.get("expect_answer", True), t.get("expect_ip"))
 
 def c_mqtt(t):
     cid = b"tcdcwatch"
@@ -122,9 +221,9 @@ def c_mqtt(t):
     rem = vh + struct.pack(">H", len(cid)) + cid
     pkt = b"\x10" + struct.pack("B", len(rem)) + rem
     s = socket.create_connection((t["host"], t.get("port", 1883)), timeout=5)
-    s.settimeout(4); s.sendall(pkt)
     resp = b""
     try:
+        s.settimeout(4); s.sendall(pkt)
         while len(resp) < 4:
             chunk = s.recv(4 - len(resp))
             if not chunk: break
@@ -134,38 +233,72 @@ def c_mqtt(t):
     if len(resp) < 4:
         return False, "connack short=%s" % resp.hex(), False
     # CONNACK: type 0x20, remaining-len 0x02, ack-flags, return-code 0x00 = accepted
-    ok = resp[0] == 0x20 and resp[1] == 0x02 and resp[3] == 0x00
+    ok = resp[0] == 0x20 and resp[1] == 0x02 and resp[2] == 0x00 and resp[3] == 0x00
     return (ok, "connack=%s rc=%d" % (resp.hex(), resp[3]), False)
 
-def c_ldap(t):
-    s = socket.create_connection((t["host"], t.get("port", 389)), timeout=5); s.settimeout(4)
-    # anonymous simple bind, msgid 1
-    bind = bytes([0x30,0x0c,0x02,0x01,0x01,0x60,0x07,0x02,0x01,0x03,0x04,0x00,0x80,0x00])
-    s.sendall(bind)
-    resp = b""
+def _ber_tlv(data, off=0):
+    if off + 2 > len(data): raise ValueError("short BER header")
+    tag, length = data[off], data[off + 1]
+    start = off + 2
+    if length & 128:
+        count = length & 127
+        if count == 0 or count > 2 or start + count > len(data):
+            raise ValueError("invalid BER length")
+        length = int.from_bytes(data[start:start + count], "big"); start += count
+    end = start + length
+    if end > len(data): raise ValueError("short BER content")
+    return tag, data[start:end], end
+
+
+def _ldap_response(resp):
     try:
-        while len(resp) < 14:
-            chunk = s.recv(64)
+        tag, message, end = _ber_tlv(resp)
+        if tag != 0x30 or end != len(resp): raise ValueError("invalid message envelope")
+        tag, ident, off = _ber_tlv(message)
+        if tag != 2 or ident != b"\1": raise ValueError("message id mismatch")
+        tag, bind, off = _ber_tlv(message, off)
+        if tag != 0x61: raise ValueError("not BindResponse")
+        if off < len(message):
+            tag, controls, off = _ber_tlv(message, off)
+            if tag != 0xA0 or off != len(message): raise ValueError("invalid controls")
+        tag, result, off = _ber_tlv(bind)
+        if tag != 10 or len(result) != 1: raise ValueError("invalid result code")
+        code = result[0]
+        for _ in range(2):  # matchedDN and diagnosticMessage are required OCTET STRINGs
+            tag, value, off = _ber_tlv(bind, off)
+            if tag != 4: raise ValueError("invalid bind fields")
+        if off < len(bind):
+            tag, value, off = _ber_tlv(bind, off)
+            if tag not in (0xA3, 0x87) or off != len(bind): raise ValueError("invalid bind suffix")
+    except ValueError as ex:
+        return False, "ldap malformed (%s)" % ex, False
+    if code == 0: return True, "ldap bind ok (rc=0)", False
+    if code == 49: return True, "ldap rc=49 invalidCreds (health unknown)", True
+    return False, "ldap service error rc=%d" % code, False
+
+
+def c_ldap(t):
+    s = socket.create_connection((t["host"], t.get("port", 389)), timeout=5)
+    try:
+        s.settimeout(4)
+        s.sendall(bytes.fromhex("300c020101600702010304008000"))
+        resp = b""
+        while len(resp) < 65540:
+            chunk = s.recv(4096)
             if not chunk: break
             resp += chunk
+            if len(resp) >= 2:
+                length = resp[1]
+                head = 2
+                if length & 128:
+                    count = length & 127
+                    if count == 0 or count > 2: return False, "ldap invalid BER length", False
+                    if len(resp) < 2 + count: continue
+                    length = int.from_bytes(resp[2:2 + count], "big"); head += count
+                if len(resp) >= head + length: break
+        return _ldap_response(resp)
     finally:
         s.close()
-    if len(resp) < 7 or resp[0] != 0x30:
-        return False, "ldap not-a-message %s" % resp[:8].hex(), False
-    # find BindResponse tag 0x61, then enumerated resultCode (tag 0x0a len 0x01 <code>)
-    i = resp.find(b"\x61")
-    if i == -1 or i + 2 >= len(resp):
-        return False, "ldap no-bindresponse %s" % resp[:12].hex(), False
-    j = resp.find(b"\x0a\x01", i)
-    if j == -1 or j + 2 >= len(resp):
-        return False, "ldap no-resultcode %s" % resp[:12].hex(), False
-    code = resp[j + 2]
-    # 0 = success. anonymous bind may be refused by policy -> still "up" (server answered
-    # LDAP correctly). Treat 0 (success) and 49 (invalidCreds, i.e. anon disabled) as UP-reachable
-    # but flag non-zero so you SEE it. Only a non-LDAP / no answer is DOWN.
-    if code == 0:
-        return True, "ldap bind ok (rc=0)", False
-    return True, "ldap answered rc=%d (anon refused, server healthy)" % code, True
 
 CHECKS = {"tcp": c_tcp, "http": c_http, "ssh": c_ssh, "ftp": c_ftp,
           "dns": c_dns, "mqtt": c_mqtt, "ldap": c_ldap}
@@ -196,7 +329,7 @@ def check_one(t):
     except Exception as e:
         ok, detail = False, "%s: %s" % (type(e).__name__, str(e)[:50])
     with LOCK:
-        st = STATE[t["name"]]; prev = st["up"]
+        st = STATE[t["name"]]; prev = st["up"]; prevreach = st.get("reach", False)
         st.update(up=ok, detail=detail, ts=time.time(), reach=reach)
         st["total"] += 1; st["ok"] += 1 if ok else 0
         st["hist"].append(1 if ok else 0); st["hist"] = st["hist"][-HIST:]
@@ -206,6 +339,10 @@ def check_one(t):
         notify(":red_circle: DOWN - %s (%s) - %s" % (t["name"], t["host"], detail))
     elif scored and ok and prev is False:
         notify(":green_circle: UP - %s (%s) - %s" % (t["name"], t["host"], detail))
+    # review #2: health LOSS without full DOWN - a service that was fully healthy now only
+    # answers at the reachability layer (e.g. LDAP rc=0 -> rc=49). Alert once on that edge.
+    elif scored and ok and prev and reach and not prevreach:
+        notify(":yellow_circle: DEGRADED - %s (%s) - %s" % (t["name"], t["host"], detail))
 
 def poll_once():
     with LOCK: reload_vault()
