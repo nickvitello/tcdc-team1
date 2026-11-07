@@ -79,6 +79,24 @@ python3 watchtower/vault.py sync <box> <user>
 ```
 Watchtower's vault tab flags anything NOT synced in red.
 
+### The actual box-side command (what `vault.py set` prints)
+Each resets a password **interactively** — it prompts for the new password, hides
+your typing, and (Linux + `net user`) asks you to confirm. The secret never lands on
+a command line, in shell history, or in `ps` output. Run these ON the box after you've
+recorded the change in the vault:
+
+| where | command | prompts |
+|-------|---------|---------|
+| **Linux** | `sudo passwd <user>` | New password → Retype |
+| **Windows (local)** | `net user <user> *` | Type a password → Retype (hidden) |
+| **AD (on the DC)** | `net user <user> * /domain` | Type a password → Retype (hidden) |
+| **AD (PowerShell)** | `$p = Read-Host -AsSecureString "New password"`<br>`Set-ADAccountPassword -Identity <user> -Reset -NewPassword $p` | one prompt, **no** confirm (AD limitation — type carefully) |
+
+> Prefer the interactive form over `vault.py set <box> <user> '<pass>'`: the inline form
+> puts the secret in your shell history. If you use the inline form, record it then clear
+> history. Either way, after the box change: update `/team/passwords`, then
+> `python3 watchtower/vault.py sync <box> <user>`.
+
 ## Drift / persistence detection
 Both watch-agents re-check their baseline on a timer (Linux 60s, Windows 2min) and alert on:
 new authorized_keys, new UID0 user, new/changed services, new systemd timers / scheduled tasks,
