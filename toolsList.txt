@@ -229,3 +229,133 @@ GIMP — https://gitlab.gnome.org/GNOME/gimp
 Docker — https://github.com/docker
 Vagrant — https://github.com/hashicorp/vagrant
 tmux — https://github.com/tmux/tmux
+
+Reconnaissance / OSINT (additional)
+FOCA — https://github.com/ElevenPaths/FOCA
+Datasploit — https://github.com/DataSploit/datasploit
+GHunt — https://github.com/mxrch/GHunt
+Social-Analyzer — https://github.com/qeeqbox/social-analyzer
+Photon (crawler) — https://github.com/s0md3v/Photon
+waybackurls — https://github.com/tomnomnom/waybackurls
+gau — https://github.com/lc/gau
+ParamSpider — https://github.com/devanshbatham/ParamSpider
+EyeWitness — https://github.com/RedSiege/EyeWitness
+Aquatone — https://github.com/michenriksen/aquatone
+crt.sh (web) — https://crt.sh
+Nuclei — https://github.com/projectdiscovery/nuclei
+Rustscan — https://github.com/RustScan/RustScan
+Naabu — https://github.com/projectdiscovery/naabu
+Wayback Machine (web) — https://web.archive.org
+
+Web Exploitation (additional)
+Caido — https://github.com/caido/caido
+kiterunner — https://github.com/assetnote/kiterunner
+InQL (GraphQL Burp ext) — https://github.com/doyensec/inql
+GraphQL Voyager — https://github.com/graphql-kit/graphql-voyager
+Corsy — https://github.com/s0md3v/Corsy
+LFI Suite — https://github.com/D35m0nd142/LFISuite
+fimap — https://github.com/kurobeats/fimap
+XXEinjector — https://github.com/enjoiz/XXEinjector
+Retire.js — https://github.com/RetireJS/retire.js
+race-the-web — https://github.com/TheHackerDev/race-the-web
+Smuggler — https://github.com/defparam/smuggler
+h2csmuggler — https://github.com/BishopFox/h2csmuggler
+Param Miner (Burp ext) — https://github.com/PortSwigger/param-miner
+Turbo Intruder (Burp ext) — https://github.com/PortSwigger/turbo-intruder
+CRLFuzz — https://github.com/dwisiswant0/crlfuzz
+Oralyzer (open redirect) — https://github.com/r0075h3ll/Oralyzer
+
+Binary Exploitation / Pwn (additional)
+angrop — https://github.com/angr/angrop
+ctf-pwn-tools — https://github.com/david942j/ctf-pwn-tools
+libformatstr — https://github.com/hellman/libformatstr
+revsh — https://github.com/emptymonkey/revsh
+Qiling — https://github.com/qilingframework/qiling
+gdbgui — https://github.com/cs01/gdbgui
+bata24 gdb dashboard — https://github.com/bata24/gef
+shellnoob — https://github.com/reyammer/shellnoob
+
+Reverse Engineering (additional)
+dogbolt (web) — https://dogbolt.org
+Compiler Explorer (web) — https://godbolt.org
+Snowman — https://github.com/yegord/snowman
+Boomerang — https://github.com/BoomerangDecompiler/boomerang
+RetDec — https://github.com/avast/retdec
+PE-bear — https://github.com/hasherezade/pe-bear
+exeinfope — https://github.com/ExeinfoASL/ASL
+dnlib — https://github.com/0xd4d/dnlib
+Procyon — https://github.com/mstrobel/procyon
+
+Cryptography (additional, including web tools)
+dcode.fr (web) — https://www.dcode.fr
+CyberChef (web-hosted) — https://gchq.github.io/CyberChef/
+factordb.com (web) — https://factordb.com
+quipqiup (web) — https://quipqiup.com
+cryptii (web) — https://cryptii.com
+boxentriq (web) — https://www.boxentriq.com/code-breaking
+rumkin.com cipher tools (web) — https://rumkin.com/tools/cipher/
+rsa-wiener-attack — https://github.com/pablocelayes/rsa-wiener-attack
+coppersmith attack scripts — https://github.com/defund/coppersmith
+sagecell (web) — https://sagecell.sagemath.org
+
+Forensics (additional)
+Forensically (web) — https://29a.ch/photo-forensics/
+FotoForensics (web) — https://fotoforensics.com
+Aperi'Solve (web) — https://aperisolve.fr
+WavSteg — https://github.com/ragibson/Steganography
+jsteg — https://github.com/lukechampine/jsteg
+OpenStego — https://github.com/syvaidya/openstego
+DVR-Scan — https://github.com/Breakthrough/DVR-Scan
+Hachoir — https://github.com/vstinner/hachoir
+Volatility (v2, legacy) — https://github.com/volatilityfoundation/volatility
+UFADE (iOS forensics) — https://github.com/P0wershell/UFADE
+ALEAPP (Android log parsing) — https://github.com/abrignoni/ALEAPP
+iLEAPP (iOS log parsing) — https://github.com/abrignoni/iLEAPP
+
+Network / Pentesting (additional)
+Inveigh — https://github.com/Kevin-Robertson/Inveigh
+SpoolSample — https://github.com/leechristensen/SpoolSample
+noPac — https://github.com/Ridter/noPac
+zerologon (CVE-2020-1472) — https://github.com/dirkjanm/CVE-2020-1472
+krbrelayx — https://github.com/dirkjanm/krbrelayx
+DeathStar — https://github.com/byt3bl33d3r/DeathStar
+Villain (C2) — https://github.com/t3l3machus/Villain
+Havoc C2 — https://github.com/HavocFramework/Havoc
+Merlin C2 — https://github.com/Ne0nd0g/merlin
+routersploit — https://github.com/threat9/routersploit
+
+Password Cracking / Wordlists (additional)
+hashcat-utils — https://github.com/hashcat/hashcat-utils
+princeprocessor (PACK-related) — https://github.com/hashcat/princeprocessor
+PACK — https://github.com/iphelix/pack
+weakpass (web) — https://weakpass.com
+Have I Been Pwned Pwned Passwords (web/API) — https://haveibeenpwned.com/Passwords
+
+Mobile / IoT (additional)
+Cycript — https://github.com/cycript/cycript
+Clutch — https://github.com/KJCracks/Clutch
+Grapefruit — https://github.com/ChiChou/grapefruit
+Passionfruit — https://github.com/chaitin/passionfruit
+JTAGenum — https://github.com/cyphunk/JTAGenum
+
+Miscellaneous / Web-based Puzzle Tools (additional)
+Ciphey — https://github.com/Ciphey/Ciphey
+regex101 (web) — https://regex101.com
+CrackStation (web) — https://crackstation.net
+UnPHP (web) — https://www.unphp.net
+JSNice (web) — http://www.jsnice.org
+de4js (web) — https://github.com/lelinhtinh/de4js
+tio.run (web esolang interpreters) — https://tio.run
+revshells.com (web) — https://www.revshells.com
+HackTricks (web reference) — https://github.com/HackTricks-wiki/hacktricks
+
+General / Utility (additional)
+Jupyter — https://github.com/jupyter/notebook
+VS Code — https://github.com/microsoft/vscode
+010 Editor (closed-source) — https://www.sweetscape.com/010editor/
+HxD (closed-source) — https://mh-nexus.de/en/hxd/
+
+Team Infrastructure (additional)
+GZCTF — https://github.com/GZTimeWalker/GZCTF
+ctfcli (CTFd CLI) — https://github.com/CTFd/ctfcli
+picoCTF platform — https://github.com/picoCTF/picoCTF
