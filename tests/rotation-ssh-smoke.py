@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='rotation-ssh-') as temporary:
         initial=r.gen_password(20)
         root(['chpasswd'],input=''.join(user+':'+initial+'\n' for user in accounts))
         policy='/etc/sudoers.d/tcdc-ci-rotation'
-        if Path(policy).exists():raise RuntimeError('Refusing existing sudo policy fixture')
+        if subprocess.run(['sudo','test','-e',policy]).returncode==0:raise RuntimeError('Refusing existing sudo policy fixture')
         def set_policy(password):
             local=path/'sudoers';local.write_text('tcdc-ci-admin ALL=(root) '+('PASSWD' if password else 'NOPASSWD')+': ALL\n')
             root(['visudo','-cf',str(local)])
@@ -90,5 +90,5 @@ with tempfile.TemporaryDirectory(prefix='rotation-ssh-') as temporary:
             if (path/'pid').exists():subprocess.run(['sudo','kill',str(int((path/'pid').read_text()))],check=False,capture_output=True)
             try:server.wait(timeout=10)
             except subprocess.TimeoutExpired:server.terminate()
-        if policy_created and Path(policy).exists():subprocess.run(['sudo','rm','-f',policy],check=False)
+        if policy_created:subprocess.run(['sudo','rm','-f',policy],check=False)
         for user in created:subprocess.run(['sudo','userdel',user],check=False,capture_output=True)

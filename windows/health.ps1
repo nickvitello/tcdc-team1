@@ -2,6 +2,8 @@
 $ErrorActionPreference='Stop'
 $issues=@()
 try {
+  . (Join-Path $PSScriptRoot 'common.ps1')
+  Assert-TcdcPrivateTree 'C:\tcdc-baseline'
   $task=Get-ScheduledTask -TaskName 'TCDC-Watch' -TaskPath '\' -ErrorAction Stop
   $info=Get-ScheduledTaskInfo -TaskName 'TCDC-Watch' -TaskPath '\' -ErrorAction Stop
   if($task.State -eq 'Disabled'){ $issues+='watcher task disabled' }

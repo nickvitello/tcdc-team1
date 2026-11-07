@@ -14,6 +14,15 @@ $root=Join-Path $env:TEMP ('tcdc-test-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $root | Out-Null
 try {
   foreach($name in 'watch-agent.ps1','common.ps1','ad-harden.ps1'){ Set-Content (Join-Path $root $name) '# fixture' }
+  $unsafe=Join-Path $root 'unsafe-child'
+  New-Item -ItemType Directory $unsafe | Out-Null
+  $acl=Get-Acl $unsafe
+  $rule=[Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'),'Modify','Allow')
+  [void]$acl.AddAccessRule($rule)
+  Set-Acl $unsafe $acl
+  $refused=$false;try { Assert-TcdcPrivateTree $root } catch { $refused=$_.Exception.Message -match 'Untrusted write' }
+  Assert $refused 'Pre-existing writable baseline child is rejected'
+  Remove-Item $unsafe -Recurse -Force
   $registryFixture='HKCU:\Software\TcdcCi-'+[guid]::NewGuid().ToString('N')
   try {
     New-Item $registryFixture | Out-Null

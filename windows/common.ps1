@@ -93,13 +93,35 @@ function Compare-TcdcSnapshot($Before,$After){
     foreach($id in $old.Keys){ if(-not $new.ContainsKey($id)){ "REMOVED $section : $id" } }
   }
 }
+function Assert-TcdcPrivateTree([string]$Path){
+  # Refuse attacker-owned/writable or redirected pre-existing paths before privileged use.
+  $trusted=@('S-1-5-18','S-1-5-32-544')
+  $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+  if(([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){ $trusted+=$identity.User.Value }
+  $writeMask=[Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+  $queue=New-Object 'System.Collections.Generic.Queue[string]'
+  $queue.Enqueue($Path)
+  while($queue.Count){
+    $current=$queue.Dequeue()
+    $item=Get-Item -LiteralPath $current -Force -ErrorAction Stop
+    if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){ throw "Unsafe reparse point: $current" }
+    $acl=Get-Acl -LiteralPath $current -ErrorAction Stop
+    if($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value){ throw "Untrusted baseline path owner: $current" }
+    foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){
+      if($rule.AccessControlType -eq 'Allow' -and ($rule.FileSystemRights -band $writeMask) -and $trusted -notcontains $rule.IdentityReference.Value){ throw "Untrusted write access on baseline path: $current" }
+    }
+    if($item.PSIsContainer){ Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop | ForEach-Object { $queue.Enqueue($_.FullName) } }
+  }
+}
 function Protect-TcdcDirectory([string]$Path){
   if(Test-Path $Path){
+    Assert-TcdcPrivateTree $Path
     if((Get-Item $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){ throw 'Refusing reparse-point baseline directory' }
   }
   New-Item -ItemType Directory -Force -Path $Path -ErrorAction Stop | Out-Null
   $acl = New-Object System.Security.AccessControl.DirectorySecurity
   $acl.SetAccessRuleProtection($true,$false)
+  $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
   foreach($sid in 'S-1-5-18','S-1-5-32-544'){
     $identity = [System.Security.Principal.SecurityIdentifier]::new($sid)
     $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
