@@ -1,4 +1,4 @@
-# Chronolock
+# PasswordRotate
 
 Rotates OS passwords on the team's Linux boxes over SSH and logs each new
 password to a Google Sheet the team shares. Runs on a laptop connected to the

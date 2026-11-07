@@ -23,7 +23,7 @@ Windows line endings in the copied files are fine: `fleet.sh` strips them before
 sending.
 
 **Passwords.** `fleet.sh` logs in as `washington` with one password for all boxes.
-When Chronolock rotates `washington`, keep it the same on every box:
+When PasswordRotate (`rotate_pass/`) rotates `washington`, keep it the same on every box:
 
 ```
 python3 rotate.py rotate --users washington --same-across-boxes

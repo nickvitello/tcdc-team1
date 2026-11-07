@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Chronolock - rotate OS passwords on the team's Linux boxes and log them to a Google Sheet.
+"""PasswordRotate - rotate OS passwords on the team's Linux boxes and log them to a Google Sheet.
 
 Runs on YOUR laptop over the VPN. Nothing is installed on the boxes.
 

@@ -1,0 +1,8 @@
+# The official manager image ships without `expect` and the ssh client, which
+# Wazuh's agentless scripts need. This adds those two packages plus our small
+# password-registration helper. Nothing else changes.
+FROM wazuh/wazuh-manager:4.14.10
+RUN dnf install -y expect openssh-clients && dnf clean all
+COPY tcdc-register.sh /usr/local/bin/tcdc-register.sh
+# strip Windows line endings in case the repo was checked out on Windows
+RUN sed -i 's/\r$//' /usr/local/bin/tcdc-register.sh && chmod 755 /usr/local/bin/tcdc-register.sh

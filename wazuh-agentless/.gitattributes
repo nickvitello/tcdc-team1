@@ -1,0 +1,4 @@
+# These files run inside Linux containers / on Linux boxes: keep LF line endings
+*.sh        text eol=lf
+*.yml       text eol=lf
+Dockerfile* text eol=lf

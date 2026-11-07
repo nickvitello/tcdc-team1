@@ -4,10 +4,13 @@
 #   sudo bash timecapsule.sh snap <label>      e.g. snap start, snap hardened, snap 1130
 #   sudo bash timecapsule.sh list
 #   sudo bash timecapsule.sh diff <A> <B>      labels or folder names, e.g. diff start hardened
+#   sudo bash timecapsule.sh diff <A> now      compare a capture against the live system
+#   sudo bash timecapsule.sh restore <A> <path> [path...]   put files/dirs back as they were in A
 #
 # A capture is a folder of plain text files (users, sudo, keys, listeners, services,
 # cron, setuid files, packages, SHA-256 of key directories) plus a config backup
-# tarball you can restore from. Read-only on the system: it changes nothing.
+# tarball you can restore from. snap/list/diff are read-only on the system.
+# restore is the only command that writes, and it saves the current version first.
 #
 # Captures live in /root/timecapsule (root only). Red team can delete /root, so
 # copy the folder to the jumpbox (still competition infrastructure, so R23 is fine).
@@ -17,6 +20,8 @@ set -uo pipefail
 STORE="${TIMECAPSULE_DIR:-/root/timecapsule}"
 BACKUP_PATHS="/etc /var/www /srv /var/lib/bind /var/cache/bind /var/ftp /root/.ssh"
 HASH_PATHS="/etc /var/www /srv /var/ftp /usr/local /usr/bin /usr/sbin /usr/lib/systemd/system /root/.ssh /var/spool/cron"
+# PAM modules: a backdoored pam_unix.so here logs every password typed at login
+HASH_PATHS="$HASH_PATHS $(ls -d /usr/lib/*/security /lib/*/security 2>/dev/null | xargs -r readlink -f | sort -u | tr '\n' ' ')"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
@@ -134,7 +139,7 @@ diff_caps(){
   echo "    B: $(basename "$B")"
 
   # file fingerprints: added / removed / changed, summarised by path
-  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"; trap - RETURN' RETURN
   awk '{print $1}' "$A/hashes.txt" > "$tmp/a"; awk '{print $1}' "$B/hashes.txt" > "$tmp/b"
   local added removed changed
   added="$(comm -13 "$tmp/a" "$tmp/b")"
@@ -163,9 +168,72 @@ diff_caps(){
   echo "restore a file from A:  tar xzf $A/backup.tgz -C / <path-without-leading-slash>"
 }
 
+# ------------------------------------------------------------------ restore
+restore(){
+  local src="$1"; shift
+  [ $# -ge 1 ] || die "usage: timecapsule.sh restore <label> <path> [path...]"
+  local A; A="$(resolve "$src")" || exit 1
+  [ -f "$A/backup.tgz" ] || die "capture $(basename "$A") has no backup.tgz"
+
+  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"; trap - RETURN' RETURN
+  tar tzf "$A/backup.tgz" 2>/dev/null | sed 's#/$##' > "$tmp/members"
+
+  local p rel ts saved
+  ts="$(date +%Y%m%d-%H%M%S)"
+  saved="$STORE/pre-restore-$ts.tgz"
+  # validate everything first: restore all or nothing
+  for p in "$@"; do
+    [[ "$p" == /* ]] || die "use absolute paths: $p"
+    rel="${p#/}"; rel="${rel%/}"
+    awk -v r="$rel" '$0==r || index($0, r"/")==1 {f=1} END{exit !f}' "$tmp/members" \
+      || die "$p is not in capture $(basename "$A") (backed-up roots: $BACKUP_PATHS)"
+  done
+
+  # 1. save what is there NOW, so a restore can itself be undone
+  local now_rel=()
+  for p in "$@"; do rel="${p#/}"; rel="${rel%/}"; [ -e "/$rel" ] && now_rel+=("$rel"); done
+  if [ ${#now_rel[@]} -gt 0 ]; then
+    tar czf "$saved" -C / "${now_rel[@]}" 2>/dev/null && chmod 600 "$saved"
+    echo "[timecapsule] current version saved -> $saved"
+  fi
+
+  # 2. put the captured version back (owners and permissions as captured)
+  for p in "$@"; do
+    rel="${p#/}"; rel="${rel%/}"
+    if tar xzpf "$A/backup.tgz" -C / --same-owner "$rel" 2>"$tmp/err"; then
+      echo "[timecapsule] restored /$rel from $(basename "$A")"
+    else
+      echo "[timecapsule] !! FAILED /$rel: $(head -c 200 "$tmp/err")"
+    fi
+    # 3. a restore puts files BACK but never deletes. Show what exists now that the
+    #    capture did not have (a dropped webshell in /var/www, a new cron file...)
+    if [ -d "/$rel" ]; then
+      find "/$rel" -type f 2>/dev/null | sed 's#^/##' | sort > "$tmp/live"
+      awk -v r="$rel" 'index($0, r"/")==1' "$tmp/members" | sort > "$tmp/had"
+      comm -23 "$tmp/live" "$tmp/had" > "$tmp/extra"
+      if [ -s "$tmp/extra" ]; then
+        echo "[timecapsule] !! files in /$rel that were NOT in the capture (review, then remove by hand):"
+        sed 's#^#      /#' "$tmp/extra" | head -50
+        [ "$(wc -l < "$tmp/extra")" -gt 50 ] && echo "      ... $(wc -l < "$tmp/extra") total"
+      fi
+    fi
+  done
+  echo "[timecapsule] NEXT: syntax-check and reload the service (apachectl configtest / named-checkconf / sshd -t),"
+  echo "              then watch the scoreboard. Undo this restore with:"
+  [ ${#now_rel[@]} -gt 0 ] && echo "              tar xzpf $saved -C /"
+}
+
 case "${1:-}" in
   snap) snap "${2:-}" ;;
   list) list ;;
-  diff) [ $# -eq 3 ] || die "usage: timecapsule.sh diff <A> <B>"; diff_caps "$2" "$3" ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  diff)
+    [ $# -eq 3 ] || die "usage: timecapsule.sh diff <A> <B|now>"
+    if [ "$3" = "now" ]; then
+      snap auto >/dev/null || die "could not capture current state"
+      diff_caps "$2" auto
+    else
+      diff_caps "$2" "$3"
+    fi ;;
+  restore) shift; [ $# -ge 2 ] || die "usage: timecapsule.sh restore <label> <path> [path...]"; restore "$@" ;;
+  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

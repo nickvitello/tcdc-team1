@@ -375,7 +375,10 @@ Mosquitto clients (MQTT testing, apt: mosquitto-clients) — https://mosquitto.o
 MQTT Explorer — https://github.com/thomasnordquist/MQTT-Explorer
 LinPEAS / pspy (defensive use on our own boxes) — listed under Network / Pentesting
 timecapsule (ours: state snapshot + diff) — linux/timecapsule.sh in this repo
-chronolock (ours: Linux password rotation) — chronolock/ in this repo
+PasswordRotate (ours: Linux password rotation) — rotate_pass/ in this repo
+fleet.sh (ours: run timecapsule / any command on all Linux boxes from the jumpbox) — linux/fleet.sh in this repo
+wazuh-agentless (ours: local Wazuh, read-only SSH checks, no agents) — wazuh-agentless/ in this repo
+Wazuh Docker (official release used by wazuh-agentless) — https://github.com/wazuh/wazuh-docker
 
 Defense / Blue Team - Windows
 Sysinternals Suite (Autoruns, Process Explorer, TCPView) — https://learn.microsoft.com/sysinternals/
