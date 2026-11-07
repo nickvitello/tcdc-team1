@@ -1,7 +1,7 @@
 # TCDC Team 1 - Active Directory hardening (Win Server 2025 DC). Run as Domain Admin on the DC.
 # SURGICAL: never touches krbtgt, never disables service/computer accounts, never deletes users (R8).
 # Reports + light safe changes only. Password rotation is MANUAL via the vault.
-param([switch]$Apply,[switch]$Rebaseline)
+param([switch]$Apply,[switch]$Rebaseline,[int]$ExpectedDomainAdmins=-1)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 $BK = 'C:\tcdc-baseline'
@@ -17,6 +17,10 @@ Log "=== AD harden (Apply=$Apply) ==="
 foreach($g in "Domain Admins","Enterprise Admins","Administrators","Schema Admins","Account Operators"){
   try {
     $m = Get-ADGroupMember $g -ErrorAction Stop | Select-Object -Expand SamAccountName
+    # Expected-count sanity check (WARN only; never deletes - R8). Topology: 5 Domain Admins.
+    if($g -eq 'Domain Admins' -and $ExpectedDomainAdmins -ge 0 -and @($m).Count -ne $ExpectedDomainAdmins){
+      Log "[grp] !! DOMAIN ADMINS COUNT MISMATCH: expected $ExpectedDomainAdmins, found $(@($m).Count) - possible pre-existing rogue DA. REVIEW."
+    }
     $bf = "$BK\grp.$($g -replace ' ','_').base.txt"
     if((Test-Path $bf) -and -not $Rebaseline){
       $base = Get-Content $bf

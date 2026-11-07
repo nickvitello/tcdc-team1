@@ -4,7 +4,9 @@ param(
   [switch]$Rebaseline,
   # Legacy switches fail explicitly BEFORE any host changes; policy changes now require manual review.
   [switch]$EnableFirewall,[switch]$EnableDefaultDeny,
-  [int[]]$ScoredPorts=@(),[int[]]$ScoredUdpPorts=@(),[int[]]$MgmtPorts=@()
+  [int[]]$ScoredPorts=@(),[int[]]$ScoredUdpPorts=@(),[int[]]$MgmtPorts=@(),
+  # Expected account counts (topology: 5 admins + 10 users). WARN only; -1 = skip.
+  [int]$ExpectedAdmins=-1,[int]$ExpectedUsers=-1
 )
 $ErrorActionPreference='Stop'
 if($EnableFirewall -or $EnableDefaultDeny){ throw 'Automatic firewall activation removed. See firewall-windows.md; no changes made.' }
@@ -33,6 +35,16 @@ Log 'Packet admins: washington, kennedy, teddy, lincoln, ross. Review identities
 Log 'Retain all packet users; never change blackteam/whiteteam. AD accounts are reported by ad-harden.ps1.'
 if((Get-CimInstance Win32_OperatingSystem).ProductType -ne 2){
   Get-LocalUser | ForEach-Object { Log ("User {0}, Enabled={1}" -f $_.Name,$_.Enabled) }
+}
+# Optional expected-count sanity check (WARN only; never deletes - R8). Topology: 5 admins + 10 users.
+# A rogue planted BEFORE audit would otherwise be captured into the accepted baseline as legitimate.
+# DCs skip this (no local SAM) - use ad-harden.ps1 -ExpectedDomainAdmins instead.
+if(($ExpectedAdmins -ge 0 -or $ExpectedUsers -ge 0) -and (Get-CimInstance Win32_OperatingSystem).ProductType -ne 2){
+  $adminCount=@(Get-TcdcAdmins).Count
+  $userCount =@(Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.Enabled }).Count
+  Log ("account census: local admins={0}, enabled local users={1}" -f $adminCount,$userCount)
+  if($ExpectedAdmins -ge 0 -and $adminCount -ne $ExpectedAdmins){ Log ("!! ADMIN COUNT MISMATCH: expected {0}, found {1} - possible pre-existing rogue admin. REVIEW before trusting baseline." -f $ExpectedAdmins,$adminCount) }
+  if($ExpectedUsers  -ge 0 -and $userCount  -ne $ExpectedUsers ){ Log ("!! USER COUNT MISMATCH: expected {0}, found {1} - review local accounts." -f $ExpectedUsers,$userCount) }
 }
 # Report drift before replacing our module files; preserve accepted state on ordinary reruns.
 if(-not $firstRun -and -not $Rebaseline){

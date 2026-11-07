@@ -70,6 +70,23 @@ sudo bash linux/harden.sh ssh-workstation --rebaseline
 & C:\tcdc-baseline\ad-harden.ps1 -Rebaseline
 ```
 
+### Optional count triage (opt-in, WARN-only)
+Counts are **not** authoritative — the rule above stands: audit identities and effective
+rights, not totals. But when you already know a box *should* hold the 5 named admins + 10
+employees, an opt-in flag gives a fast "did the number change from what I expect?" nudge that
+points you at the identity review. It only logs a WARN; it never deletes or changes anything
+(R8). Omit the flags (default) to skip it entirely; adjust the numbers for any box that
+legitimately differs.
+
+```sh
+sudo bash linux/harden.sh ssh-workstation --expect-admins 5 --expect-users 10
+```
+```powershell
+& .\windows\harden.ps1 -Box mqtt -ExpectedAdmins 5 -ExpectedUsers 10
+& C:\tcdc-baseline\ad-harden.ps1 -ExpectedDomainAdmins 5   # DC: Domain Admins group
+```
+A mismatch means "go look at *who* the accounts are," not "delete one."
+
 ## Watchtower and passwords
 
 The packet says to use the provided jumpbox for infrastructure access. Use only the staff-approved access path; do not assume direct laptop-to-service VPN routing is available or permitted. Watchtower needs network access to the eight listed endpoints; running it on a laptop is conditional on that access being allowed. Do not harden the jumpbox or use it to host attack infrastructure.
