@@ -13,11 +13,14 @@ function Wait-Watcher {
   if($task.State -eq 'Running' -or $info.LastTaskResult -ne 0){ throw "Watcher runtime failure: $($info.LastTaskResult)" }
 }
 try {
-  & (Join-Path $repo 'windows/harden.ps1') -Box ci-fixture
+  $refused=$false
+  try { & (Join-Path $repo 'windows/harden.ps1') -Box ci-fixture } catch { $refused=$_.Exception.Message -match 'requires review' }
+  if(-not $refused){ throw 'Initial capture accepted without review flag' }
+  & (Join-Path $repo 'windows/harden.ps1') -Box ci-fixture -AcceptInitialState
   Wait-Watcher
   $file='C:\tcdc-baseline\integrity.json'
   $before=(Get-FileHash $file).Hash
-  & (Join-Path $repo 'windows/harden.ps1') -Box ci-fixture
+  & (Join-Path $repo 'windows/harden.ps1') -Box ci-fixture -AcceptInitialState
   Wait-Watcher
   if((Get-FileHash $file).Hash -ne $before){ throw 'Rerun changed accepted baseline' }
   # Change only our installed helper file by appending a harmless comment; verify the scheduled watcher logs it.
@@ -29,6 +32,13 @@ try {
   . (Join-Path $repo 'windows/common.ps1')
   $changes=@(Compare-TcdcSnapshot (Read-TcdcBaseline $file) (Get-TcdcSnapshot 'C:\tcdc-baseline'))
   if($changes.Count){ throw ('Unexpected post-restore drift: ' + ($changes -join '; ')) }
+  & powershell.exe -NoProfile -File (Join-Path $repo 'windows/health.ps1')
+  if($LASTEXITCODE -ne 0){ throw 'Independent health check failed' }
+  Disable-ScheduledTask -TaskName 'TCDC-Watch' -TaskPath '\' | Out-Null
+  & powershell.exe -NoProfile -File (Join-Path $repo 'windows/health.ps1')
+  if($LASTEXITCODE -eq 0){ throw 'Health check missed disabled task' }
+  $global:LASTEXITCODE=0
+  Enable-ScheduledTask -TaskName 'TCDC-Watch' -TaskPath '\' | Out-Null
   Write-Host 'PASS: real Windows install, SYSTEM task run, rerun preservation, module tamper detection and restore'
 } finally {
   $task=Get-ScheduledTask -TaskName 'TCDC-Watch' -TaskPath '\' -ErrorAction SilentlyContinue

@@ -61,7 +61,7 @@ class IntegrityTests(unittest.TestCase):
         for name,body in stubs.items():
             path=binpath/name;path.write_text('#!/bin/sh\n'+body+'\n');path.chmod(0o700)
         env=dict(os.environ,PATH=str(binpath)+':'+os.environ['PATH'],TEST_ROOT=str(self.root))
-        return subprocess.run(['bash',str(source/'harden.sh'),'fixture',*args],env=env,text=True,capture_output=True)
+        return subprocess.run(['bash',str(source/'harden.sh'),'fixture','--accept-initial-state',*args],env=env,text=True,capture_output=True)
     def test_install_tracks_own_units_and_rerun_preserves_drift(self):
         result=self.install();self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         baseline=self.path('/root/tcdc-baseline/integrity.json')

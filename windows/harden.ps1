@@ -1,7 +1,7 @@
 # Audit, private baseline, logging, and watcher installation. Firewall/SSH/accounts unchanged.
 param(
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')][string]$Box=$env:COMPUTERNAME,
-  [switch]$Rebaseline,
+  [switch]$Rebaseline,[switch]$AcceptInitialState,
   # Legacy switches fail explicitly BEFORE any host changes; policy changes now require manual review.
   [switch]$EnableFirewall,[switch]$EnableDefaultDeny,
   [int[]]$ScoredPorts=@(),[int[]]$ScoredUdpPorts=@(),[int[]]$MgmtPorts=@()
@@ -16,6 +16,7 @@ foreach($name in 'common.ps1','watch-agent.ps1','ad-harden.ps1'){
 }
 . (Join-Path $selfDir 'common.ps1')
 $BK='C:\tcdc-baseline'
+if(-not (Test-Path (Join-Path $BK 'integrity.json')) -and -not $AcceptInitialState -and -not $Rebaseline){ throw 'Initial/old baseline requires review: see readiness.md, then -AcceptInitialState (first install) or -Rebaseline (upgrade). Nothing installed.' }
 Protect-TcdcDirectory $BK
 $ts=Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $log=Join-Path $BK "harden-$ts.log"

@@ -1,31 +1,18 @@
 #!/usr/bin/env python3
-"""Chronolock - rotate OS passwords on the team's Linux boxes and log them to a Google Sheet.
+"""Chronolock: one-account Linux rotation through verified SSH host keys.
 
-Runs on YOUR laptop over the VPN. Nothing is installed on the boxes.
-
-  python3 rotate.py check                          test SSH + sudo on every box
-  python3 rotate.py rotate --dry-run               show what would change, change nothing
-  python3 rotate.py rotate                         rotate every listed user on every box
-  python3 rotate.py rotate --boxes ns1 --users admins
-  python3 rotate.py show                           print the latest password per box/user
-  python3 rotate.py resync                         push any log entries the Sheet missed
-
-Safety rules built in:
-  * blackteam / whiteteam are never touched (R8), whatever the config says.
-  * Every new password is written to the LOCAL log BEFORE it is applied, so a crash
-    or dropped connection can never lose a password. The Sheet is a copy, not the source.
-  * Each change is verified by comparing the user's /etc/shadow hash before and after.
-  * The admin account the tool logs in with is rotated LAST on each box, and the
-    tool remembers its new password for the next run.
-  * It does NOT update the scoring dashboard. Every row it prints must still be
-    entered at /team/passwords by hand.
+Use --dry-run for offline planning. Apply one account, verify access and update
+/team/passwords, then ack before continuing. Pending/unknown candidates remain
+in a durable local journal for manual recovery. Optional Sheets logging is a
+password copy, never the source of truth or dashboard integration. See README.
 """
 import argparse, datetime, json, os, re, secrets, string, sys, time
+import contextlib, shlex, tempfile, uuid
 
 try:
     import paramiko
 except ImportError:
-    sys.exit("paramiko missing:  pip install -r requirements.txt")
+    paramiko = None  # Offline planning/show must not require SSH libraries.
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, "config.json")
@@ -43,12 +30,42 @@ def die(msg):
 def now():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+@contextlib.contextmanager
+def operation_lock():
+    """One local operator process at a time, including durable state + remote operation."""
+    with open(os.path.join(HERE, ".rotation.lock"), "a+b") as stream:
+        if os.name == "nt":
+            import msvcrt
+            if os.fstat(stream.fileno()).st_size == 0: stream.write(b"0"); stream.flush()
+            stream.seek(0); msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try: yield
+        finally:
+            if os.name == "nt": stream.seek(0); msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else: fcntl.flock(stream, fcntl.LOCK_UN)
+
+
 def private_write(path, text, mode="w"):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode == "a" else os.O_TRUNC), 0o600)
-    with os.fdopen(fd, mode) as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
+    if os.path.islink(path): raise ValueError("refusing symlink secret file")
+    if mode == "a":
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "a") as stream:
+            if os.name != "nt": os.fchmod(stream.fileno(), 0o600)
+            stream.write(text); stream.flush(); os.fsync(stream.fileno())
+    else:
+        fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".rotation-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as stream:
+                stream.write(text); stream.flush(); os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary): os.unlink(temporary)
+    if os.name != "nt":
+        directory = os.open(os.path.dirname(path), os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
 
 def load_json(path, default):
     try:
@@ -60,6 +77,8 @@ def load_json(path, default):
 def gen_password(length):
     """Letters + digits only: no quotes, $, \\, : or spaces that could break chpasswd,
     a shell, or a scoring checker. Always has upper, lower and digit (meets AD rules too)."""
+    if not isinstance(length, int) or not 16 <= length <= 128:
+        raise ValueError("password_length must be 16..128")
     alphabet = string.ascii_letters + string.digits
     alphabet = "".join(c for c in alphabet if c not in "lIO0")   # avoid misreads when typing
     while True:
@@ -79,26 +98,37 @@ def read_log():
                 if line:
                     try:
                         out.append(json.loads(line))
-                    except ValueError:
-                        pass
+                    except ValueError as ex:
+                        raise ValueError("corrupt password journal; preserve and recover it before continuing") from ex
     return out
 
 
 # ---------------------------------------------------------------- config
+def validate_user(user):
+    if not isinstance(user, str) or not re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", user):
+        raise ValueError("invalid username")
+    if user in NEVER_TOUCH: raise ValueError("protected staff account")
+    return user
+
+
 def load_config():
     cfg = load_json(CONFIG, None)
-    if cfg is None:
-        die("no config.json - copy config.example.json to config.json and fill it in")
+    if cfg is None: die("copy config.example.json to config.json and configure verified host keys")
     team = int(cfg["team"])
-    net = 100 + team
-    for b in cfg["boxes"]:
-        b["host"] = b["host"].format(team=team, net=net)
-    for u in cfg["users"] + cfg.get("admins", []):
-        if not re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", u):
-            die("bad username in config: %r" % u)
-    users = [u for u in cfg["users"] if u not in NEVER_TOUCH]
-    admins = [u for u in cfg.get("admins", []) if u not in NEVER_TOUCH]
-    cfg["users"], cfg["admins"] = users, admins
+    if not 1 <= team <= 154: die("invalid team number")
+    names=set()
+    for box in cfg["boxes"]:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", box["name"]) or box["name"] in names:
+            die("invalid/duplicate box name")
+        names.add(box["name"])
+        box["host"] = box["host"].format(team=team, net=100 + team)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.:-]*", box["host"]): die("invalid host")
+        validate_user(box.get("admin_user", cfg["ssh"]["admin_user"]))
+        if not 1 <= int(box.get("port", cfg["ssh"].get("port", 22))) <= 65535: die("invalid port")
+    for user in cfg["users"] + cfg.get("admins", []): validate_user(user)
+    if len(set(cfg["users"])) != len(cfg["users"]): die("duplicate users")
+    length=cfg.get("password_length",16)
+    if not isinstance(length,int) or not 16 <= length <= 128: die("password_length must be 16..128")
     return cfg
 
 def admin_password(cfg, box):
@@ -118,53 +148,83 @@ class Box:
         self.port = int(box.get("port", cfg["ssh"].get("port", 22)))
         self.admin = box.get("admin_user", cfg["ssh"]["admin_user"])
         self.pw = admin_password(cfg, box)
-        self.nopasswd = False
+        validate_user(self.admin)
+        if not isinstance(self.pw,str) or any(c in self.pw for c in "\r\n\0"): raise ValueError("invalid admin password")
+        if paramiko is None: die("paramiko missing: pip install -r requirements.txt")
         self.c = paramiko.SSHClient()
-        self.c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        known = os.path.expanduser(cfg["ssh"].get("known_hosts_file", "~/.ssh/known_hosts"))
+        if not os.path.isabs(known): known = os.path.join(HERE, known)
+        self.c.load_host_keys(known)
+        self.c.set_missing_host_key_policy(paramiko.RejectPolicy())
 
     def connect(self):
         self.c.connect(self.host, port=self.port, username=self.admin, password=self.pw,
                        timeout=8, banner_timeout=8, auth_timeout=8,
                        look_for_keys=False, allow_agent=False)
-        # Detect passwordless sudo: if we fed a password to `sudo -S` there, it would be
-        # read by the command itself (e.g. chpasswd would treat it as a bad line).
-        _, out, _ = self.c.exec_command("sudo -n true 2>/dev/null && echo NOPASSWD", timeout=10)
-        self.nopasswd = "NOPASSWD" in out.read().decode()
 
     def sudo(self, cmd, stdin_text=""):
-        """Run cmd as root. Returns (exit_code, stdout, stderr)."""
-        full = "sudo -S -p '' " + cmd
-        i, o, e = self.c.exec_command(full, timeout=20)
-        payload = ("" if self.nopasswd else self.pw + "\n") + stdin_text
-        if payload:
-            i.write(payload)
-        i.channel.shutdown_write()
-        out, err = o.read().decode(), e.read().decode()
-        return o.channel.recv_exit_status(), out, err
+        """Separate sudo authentication from command input, including NOPASSWD/cached sudo.
+
+        Passwords are sent only on the unique stderr prompt. Command input is sent
+        only after the privileged wrapper announces readiness. Nothing secret goes
+        in the SSH command line or remote process arguments.
+        """
+        token = secrets.token_hex(16)
+        prompt, ready = "TCDC_AUTH_" + token, "TCDC_READY_" + token
+        wrapper = "printf '%s\\n' " + shlex.quote(ready) + " >&2; exec " + cmd
+        full = "sudo -k -S -p " + shlex.quote(prompt) + " -- sh -c " + shlex.quote(wrapper)
+        channel = self.c.get_transport().open_session(timeout=10)
+        channel.settimeout(20)
+        output, errors = b"", b""
+        sent_auth = sent_input = False
+        deadline = time.monotonic() + 20
+        try:
+            channel.exec_command(full)
+            while True:
+                if channel.recv_ready(): output += channel.recv(65536)
+                if channel.recv_stderr_ready(): errors += channel.recv_stderr(65536)
+                if prompt.encode() in errors:
+                    if sent_auth: raise RuntimeError("sudo authentication rejected")
+                    channel.sendall((self.pw + "\n").encode())
+                    sent_auth = True; errors = errors.replace(prompt.encode(), b"", 1)
+                if ready.encode() in errors and not sent_input:
+                    channel.sendall(stdin_text.encode())
+                    channel.shutdown_write(); sent_input = True
+                    errors = errors.replace(ready.encode(), b"", 1)
+                if len(output) + len(errors) > 1048576: raise RuntimeError("excess remote output")
+                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    return channel.recv_exit_status(), output.decode(errors="replace"), errors.decode(errors="replace")
+                if time.monotonic() > deadline: raise TimeoutError("sudo/command timed out; result unknown")
+                time.sleep(0.01)
+        finally:
+            channel.close()
 
     def check_sudo(self):
         code, out, err = self.sudo("id -u")
         return code == 0 and out.strip() == "0", (err or out).strip()
 
     def user_exists(self, user):
-        code, out, _ = self.sudo("getent passwd " + user)
-        return code == 0 and out.strip() != ""
+        validate_user(user)
+        code, out, _ = self.sudo("getent passwd " + shlex.quote(user) + " >/dev/null")
+        return code == 0
 
     def change_and_verify(self, user, pw):
         """Read the shadow hash, run chpasswd, read it again - all inside ONE sudo call.
         (Separate sudo calls break when the user is the admin we log in with: after
         chpasswd, sudo would demand the NEW password and the check would wrongly fail.)
         Returns (changed: bool, detail: str)."""
-        script = ("getent shadow %s | cut -d: -f2; chpasswd; rc=$?; "
-                  "getent shadow %s | cut -d: -f2; exit $rc") % (user, user)
-        code, out, err = self.sudo("sh -c '%s'" % script, stdin_text="%s:%s\n" % (user, pw))
-        lines = out.strip().splitlines()
-        if len(lines) < 2:
-            return False, (err or "no output").strip()
-        before, after = lines[0].strip(), lines[-1].strip()
-        if code == 0 and after and after != before:
-            return True, ""
-        return False, (err.strip() or "hash unchanged (rc=%d)" % code)
+        validate_user(user)
+        if not re.fullmatch(r"[A-Za-z0-9]{16,128}", pw): raise ValueError("invalid generated password")
+        # Hashes stay on the target. Only a result marker comes back to the operator.
+        script = ("before=$(getent shadow {u} | cut -d: -f2); "
+                  "[ -n \"$before\" ] || exit 2; "
+                  "chpasswd || exit 3; "
+                  "after=$(getent shadow {u} | cut -d: -f2); "
+                  "[ -n \"$after\" ] && [ \"$before\" != \"$after\" ] || exit 4; "
+                  "printf 'TCDC_CHANGED\\n'").format(u=shlex.quote(user))
+        code, out, err = self.sudo("sh -c " + shlex.quote(script), stdin_text="%s:%s\n" % (user, pw))
+        if code == 0 and out.strip() == "TCDC_CHANGED": return True, ""
+        return False, "remote verification incomplete (rc=%d); new password may already be active" % code
 
     def close(self):
         try:
@@ -236,6 +296,11 @@ def select(cfg, args):
         users = [u for u in cfg["users"] if u not in cfg["admins"]]
     else:
         users = [u for u in args.users.split(",") if u not in NEVER_TOUCH]
+    for user in users:
+        validate_user(user)
+        if user not in cfg["users"]: die("user is not in configured allowlist")
+    if not boxes or not users: die("empty selection")
+    if len(set(users)) != len(users): die("duplicate selected user")
     return boxes, users
 
 def cmd_check(cfg, args):
@@ -247,7 +312,7 @@ def cmd_check(cfg, args):
             bx.connect()
             ok, detail = bx.check_sudo()
             print("%-16s %-16s %s" % (b["name"], b["host"],
-                  ("OK  ssh+sudo as %s%s" % (bx.admin, " (NOPASSWD)" if bx.nopasswd else "")) if ok
+                  ("OK  ssh+sudo as %s" % bx.admin) if ok
                   else "FAIL sudo: " + detail))
             bad += 0 if ok else 1
         except Exception as ex:
@@ -257,108 +322,80 @@ def cmd_check(cfg, args):
             bx.close()
     sys.exit(1 if bad else 0)
 
+def latest_entries():
+    latest={}
+    for entry in read_log():
+        if not isinstance(entry,dict) or any(not isinstance(entry.get(k),str) for k in ("box","user","password","status","time")):
+            die("invalid journal schema; preserve and recover it")
+        latest[(entry["box"],entry["user"])]=entry
+    return latest
+
+
 def rotate_box(cfg, args, b, users, sheet, same_pw):
-    bx = Box(cfg, b)
-    print("\n== %s (%s) as %s" % (b["name"], b["host"], bx.admin))
+    bx=Box(cfg,b)
     try:
         bx.connect()
-    except Exception as ex:
-        print("   FAIL ssh: %s  -- box skipped, nothing changed" % ex)
-        return []
-    ok, detail = bx.check_sudo()
-    if not ok:
-        print("   FAIL sudo: %s  -- box skipped, nothing changed" % detail)
-        bx.close()
-        return []
-
-    # admin we log in with goes LAST so a mid-run failure never locks the tool out
-    order = [u for u in users if u != bx.admin] + ([bx.admin] if bx.admin in users else [])
-    done = []
-    for user in order:
-        if not bx.user_exists(user):
-            print("   %-12s not on this box, skipped" % user)
-            continue
-        pw = same_pw.get(user) or gen_password(cfg.get("password_length", 16))
-        if args.dry_run:
-            print("   %-12s would rotate" % user)
-            continue
-        base = {"time": now(), "box": b["name"], "host": b["host"], "user": user, "password": pw}
-        log_event(dict(base, status="pending"))       # recorded BEFORE it is applied
+        ok,detail=bx.check_sudo()
+        if not ok: die("sudo check failed; no rotation attempted")
+        user=users[0]
+        if not bx.user_exists(user): die("selected user does not exist; no rotation attempted")
+        pw=gen_password(cfg.get("password_length",16))
+        base={"operation":uuid.uuid4().hex,"time":now(),"box":b["name"],"host":b["host"],"user":user,"password":pw}
+        log_event(dict(base,status="pending"))  # Durable journal before any change.
         try:
-            ok, err = bx.change_and_verify(user, pw)
-        except Exception as ex:
-            # connection dropped mid-change: we genuinely don't know. Leave it 'pending'.
-            print("   %-12s UNKNOWN  connection lost (%s) - password may be %s, test it" % (user, ex, pw))
-            break
-        if ok:
-            e = dict(base, time=now(), status="changed")
-            log_event(e)
-            if user == bx.admin:
-                save_admin_password(b["name"], pw)
-                bx.pw = pw
-            print("   %-12s CHANGED  %s" % (user, pw))
-            done.append(e)
-        else:
-            e = dict(base, time=now(), status="FAILED")
-            log_event(e)
-            print("   %-12s FAILED   old password still active (%s)" % (user, err[:80]))
-            done.append(e)
-    bx.close()
-    if sheet.enabled and sheet.append_many([e for e in done if e["status"] == "changed"]):
-        print("   logged to Google Sheet")
-    return done
+            ok,detail=bx.change_and_verify(user,pw)
+        except Exception:
+            log_event(dict(base,status="unknown"))
+            die("connection/verification failed; result UNKNOWN. Use show; verify or manually apply the recorded candidate, then update dashboard and ack")
+        if not ok:
+            log_event(dict(base,status="unknown"))
+            die(detail + "; use show and recover before another rotation")
+        event=dict(base,time=now(),status="changed")
+        log_event(event)
+        if user == bx.admin: save_admin_password(b["name"],pw)
+        print("CHANGED %s/%s: %s" % (b["name"],user,pw))
+        print("Verify access, update /team/passwords, then run ack for this exact box/user before another rotation.")
+        sheet.append_many([event])
+        return [event]
+    finally:
+        bx.close()
+
 
 def cmd_rotate(cfg, args):
-    boxes, users = select(cfg, args)
-    if not users:
-        die("no users selected")
-    print("boxes: %s" % ", ".join(b["name"] for b in boxes))
-    print("users: %s" % ", ".join(users))
-    print("never touched: %s" % ", ".join(sorted(NEVER_TOUCH)))
+    boxes,users=select(cfg,args)
     if args.dry_run:
-        print("DRY RUN - nothing will change")
-    elif not args.yes:
-        if input("\nRotate these now? type yes: ").strip().lower() != "yes":
-            die("aborted")
-    sheet = Sheet(cfg) if not args.dry_run else Sheet({})
-    same_pw = {}
-    if args.same_across_boxes:
-        same_pw = {u: gen_password(cfg.get("password_length", 16)) for u in users}
-    results = []
-    for b in boxes:
-        results += rotate_box(cfg, args, b, users, sheet, same_pw)
-    if args.dry_run:
+        for box in boxes:
+            for user in users: print("PLAN %s (%s) / %s" % (box["name"],box["host"],user))
+        print("Offline plan only: no SSH, sudo, password generation, Sheet access, or writes.")
         return
-    changed = [e for e in results if e["status"] == "changed"]
-    fails = [e for e in results if e["status"] == "FAILED"]
-    print("\n%d password(s) changed. NOW enter each one at /team/passwords:" % len(changed))
-    for e in changed:
-        print("   %-16s %-12s %s" % (e["box"], e["user"], e["password"]))
-    if fails:
-        print("\n%d failure(s) this run - these users keep their OLD password:" % len(fails))
-        for e in fails:
-            print("   %-16s %s" % (e["box"], e["user"]))
+    if len(boxes) != 1 or len(users) != 1: die("select exactly one --boxes NAME and one --users USER; sync the dashboard after each")
+    if args.same_across_boxes: die("shared passwords disabled; use a unique password per box/account")
+    if any(e["status"] != "synced" for e in latest_entries().values()):
+        die("prior rotation is unsynced or uncertain; recover and ack it before continuing")
+    if not args.yes and input("Rotate this one account now? type yes: ").strip() != "yes": die("aborted")
+    rotate_box(cfg,args,boxes[0],users,Sheet(cfg),{})
 
-def cmd_show(cfg, args):
-    latest, confirmed = {}, {}
-    for e in read_log():
-        k = (e["box"], e["user"])
-        if e["status"] == "changed":
-            latest[k] = confirmed[k] = e
-        elif e["status"] == "pending":
-            latest[k] = e
-        elif e["status"] == "FAILED" and k in latest and latest[k]["password"] == e["password"]:
-            # verified NOT applied: fall back to the last confirmed password (or none = default)
-            if k in confirmed:
-                latest[k] = confirmed[k]
-            else:
-                del latest[k]
-    if not latest:
-        print("log empty")
-        return
-    for (box, user), e in sorted(latest.items()):
-        flag = "" if e["status"] == "changed" else "  <-- PENDING: may or may not have applied, test it"
-        print("%-16s %-12s %-20s %s%s" % (box, user, e["password"], e["time"], flag))
+
+def cmd_ack(cfg,args):
+    boxes,users=select(cfg,args)
+    if len(boxes)!=1 or len(users)!=1: die("ack requires exactly one box and user")
+    box,user=boxes[0],users[0]
+    entry=latest_entries().get((box["name"],user))
+    if entry is None: die("no recorded candidate")
+    if entry["status"] == "synced": print("already acknowledged"); return
+    if input("Confirm recorded candidate works AND /team/passwords is updated; type verified: ").strip() != "verified": die("not acknowledged")
+    # Recovery of a lost response is manual: only acknowledge after testing or
+    # applying the journaled candidate. Never discard that candidate as 'failed'.
+    if user == box.get("admin_user",cfg["ssh"]["admin_user"]): save_admin_password(box["name"],entry["password"])
+    log_event(dict(entry,time=now(),status="synced"))
+    print("Manual dashboard/access attestation recorded; not an automated scorer verification.")
+
+def cmd_show(cfg,args):
+    latest=latest_entries()
+    if not latest: print("log empty")
+    for (box,user),entry in sorted(latest.items()):
+        print("%s %s %s [%s]" % (box,user,entry["password"],entry["status"]))
+    print("pending/unknown/FAILED means the candidate MAY be active; verify or manually apply it before ack.")
 
 def cmd_resync(cfg, args):
     sheet = Sheet(cfg)
@@ -368,15 +405,15 @@ def cmd_resync(cfg, args):
     for row in sheet.ws.get_all_values()[1:]:
         if len(row) >= 5:
             have.add((row[1], row[3], row[4]))
-    missing = [e for e in read_log()
-               if e["status"] == "changed" and (e["box"], e["user"], e["password"]) not in have]
+    candidates = {(e["box"], e["user"], e["password"]): e for e in read_log() if e["status"] in ("changed", "synced")}
+    missing = [e for key,e in candidates.items() if key not in have]
     if sheet.append_many(missing):
         print("pushed %d missing row(s)" % len(missing))
 
 def main():
     p = argparse.ArgumentParser(description="Rotate OS passwords on team Linux boxes")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("check", "rotate", "show", "resync"):
+    for name in ("check", "rotate", "show", "resync", "ack"):
         s = sub.add_parser(name)
         s.add_argument("--boxes", help="comma list of box names (default: all)")
         s.add_argument("--users", default="all",
@@ -385,10 +422,16 @@ def main():
             s.add_argument("--dry-run", action="store_true")
             s.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
             s.add_argument("--same-across-boxes", action="store_true",
-                           help="give each user ONE password on every box (fewer dashboard entries)")
+                           help="legacy option; live shared-password rotation is refused")
     args = p.parse_args()
-    cfg = load_config()
-    {"check": cmd_check, "rotate": cmd_rotate, "show": cmd_show, "resync": cmd_resync}[args.cmd](cfg, args)
+    try:
+        cfg = load_config()
+        if args.cmd == "rotate" and args.dry_run:
+            cmd_rotate(cfg,args); return
+        with operation_lock():
+            {"check":cmd_check,"rotate":cmd_rotate,"show":cmd_show,"resync":cmd_resync,"ack":cmd_ack}[args.cmd](cfg,args)
+    except (OSError,ValueError) as ex:
+        die(str(ex))
 
 if __name__ == "__main__":
     main()

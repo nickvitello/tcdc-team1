@@ -1,2 +1,2 @@
-paramiko>=3.0
-gspread>=6.0
+paramiko>=3.0,<5
+gspread>=6.0,<7

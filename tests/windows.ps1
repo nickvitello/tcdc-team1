@@ -65,7 +65,7 @@ try {
     if($Uri -like '*/harden.ps1'){ Set-Content $OutFile 'param([string]$Box) $global:InvocationBox=$Box' }
     else { Set-Content $OutFile '# fixture' }
   }
-  $Box='ad';$Ref='fixture-revision'
+  $Box='ad';$Ref=('a'*40)
   & (Join-Path $repo 'boot.ps1')
   Assert ($global:InvocationBox -eq 'ad') 'AD bootstrap invokes script with typed Box argument'
   $global:InvocationBox=$null

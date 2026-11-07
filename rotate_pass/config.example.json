@@ -1,32 +1,61 @@
 {
   "team": 1,
   "_team_note": "your team number X. {net} below becomes 100+X, {team} becomes X",
-
   "ssh": {
     "admin_user": "washington",
     "admin_password": "DEFAULT-PASSWORD-FROM-DISCORD",
-    "port": 22
+    "port": 22,
+    "known_hosts_file": "known_hosts"
   },
-
   "boxes": [
-    {"name": "ns1",             "host": "10.{net}.10.53"},
-    {"name": "ftp-archive",     "host": "10.{net}.10.21"},
-    {"name": "artifactorium",   "host": "10.{net}.10.80"},
-    {"name": "ssh-workstation", "host": "10.{net}.10.22"},
-    {"name": "ipcam",           "host": "10.150.0.{team}"}
+    {
+      "name": "ns1",
+      "host": "10.{net}.10.53"
+    },
+    {
+      "name": "ftp-archive",
+      "host": "10.{net}.10.21"
+    },
+    {
+      "name": "artifactorium",
+      "host": "10.{net}.10.80"
+    },
+    {
+      "name": "ssh-workstation",
+      "host": "10.{net}.10.22"
+    },
+    {
+      "name": "ipcam",
+      "host": "10.150.0.{team}"
+    }
   ],
-
-  "admins": ["washington", "kennedy", "teddy", "lincoln", "ross"],
+  "admins": [
+    "washington",
+    "kennedy",
+    "teddy",
+    "lincoln",
+    "ross"
+  ],
   "users": [
-    "washington", "kennedy", "teddy", "lincoln", "ross",
-    "streep", "franklin", "parks", "armstrong", "hamilton",
-    "mlk", "tubman", "manziel", "deniro", "bush"
+    "washington",
+    "kennedy",
+    "teddy",
+    "lincoln",
+    "ross",
+    "streep",
+    "franklin",
+    "parks",
+    "armstrong",
+    "hamilton",
+    "mlk",
+    "tubman",
+    "manziel",
+    "deniro",
+    "bush"
   ],
-
   "password_length": 16,
-
   "sheet": {
-    "enabled": true,
+    "enabled": false,
     "service_account_file": "service-account.json",
     "url": "https://docs.google.com/spreadsheets/d/YOUR-SHEET-ID/edit",
     "worksheet": "Passwords"

@@ -1,7 +1,7 @@
 # TCDC Team 1 - Active Directory hardening (Win Server 2025 DC). Run as Domain Admin on the DC.
 # SURGICAL: never touches krbtgt, never disables service/computer accounts, never deletes users (R8).
 # Reports + light safe changes only. Password rotation is MANUAL via the vault.
-param([switch]$Apply,[switch]$Rebaseline)
+param([switch]$Apply,[switch]$Rebaseline,[switch]$AcceptInitialState)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 $BK = 'C:\tcdc-baseline'
@@ -28,6 +28,7 @@ foreach($g in "Domain Admins","Enterprise Admins","Administrators","Schema Admin
         Log "[grp] $g : $($m -join ', ')  (matches baseline)"
       }
     } else {
+      if(-not $AcceptInitialState -and -not $Rebaseline){ throw 'Review AD membership, then use -AcceptInitialState to capture missing groups' }
       $m | Out-File $bf
       Log "[grp] $g : $($m -join ', ')  (baseline captured)"
     }

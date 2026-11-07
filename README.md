@@ -2,6 +2,8 @@
 
 Preparation tools for TCDC SMC F26, November 7, 2026. Scoring: **80% service uptime, 20% injects**. The official packet permits reversible purple teaming; see [the attack playbook](purple-team.md). `toolsList.txt` is a reference catalog, not a list of installed, approved, or tested tools.
 
+Read [readiness.md](readiness.md) before first capture, credential rotation, or patching. Initial baseline creation requires explicit `--accept-initial-state` / `-AcceptInitialState` after review. Use the independent `linux/health.py` and `windows/health.ps1` commands from a trusted checkout to detect stopped or altered watchers.
+
 ## What runs where
 
 | Component | Purpose |
@@ -10,6 +12,7 @@ Preparation tools for TCDC SMC F26, November 7, 2026. Scoring: **80% service upt
 | `windows/harden.ps1` | Local account/firewall audit, private baseline, scheduled watcher installation |
 | `windows/ad-harden.ps1` | DC group baseline and drift audit; optional explicit SMBv1/audit changes |
 | `watchtower/monitor.py` | Service protocol checks and local dashboard; never a scorer guarantee |
+| `rotate_pass/rotate.py` | Verified-host-key Linux rotation, one account per dashboard acknowledgment |
 | `watchtower/vault.py` | Local password records and manual dashboard-sync attestation |
 | `firewall-opnsense.md`, `firewall-windows.md` | Manual policy review and recovery procedures |
 | `purple-team.md` | Scope, permitted attack preparation, verification, and undo workflow |
@@ -32,7 +35,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 On an in-scope Linux box, after staging `linux/` together:
 
 ```sh
-sudo bash linux/harden.sh ssh-workstation
+sudo bash linux/harden.sh ssh-workstation --accept-initial-state
 # Use ns1, ftp-archive, artifactorium, or ipcam as appropriate.
 sudo /usr/local/sbin/tcdc-watch
 sudo tail /root/tcdc-baseline/drift.log
@@ -40,20 +43,20 @@ sudo tail /root/tcdc-baseline/drift.log
 
 Requires Python 3, Bash, systemd, and coreutils on the documented Ubuntu boxes. It writes local snapshots under `/root/tcdc-baseline`, installs two watcher files and a service/timer, and checks every minute. File bytes, modes, owners, symlink destinations and regular-file target bytes are compared. Directory symlink destinations are recorded, but arbitrary trees outside the configured roots are not recursively inventoried. This is a drift detector, not comprehensive endpoint protection. It does not replace or modify Wazuh/auditd.
 
-On Windows, stage **all four files in `windows/` together**, then use an Administrator Windows PowerShell:
+On Windows, stage **all files in `windows/` together**, then use an Administrator Windows PowerShell:
 
 ```powershell
-& .\windows\harden.ps1 -Box mqtt
+& .\windows\harden.ps1 -Box mqtt -AcceptInitialState
 # On the DC instead:
-& .\windows\harden.ps1 -Box ad
-& C:\tcdc-baseline\ad-harden.ps1
+& .\windows\harden.ps1 -Box ad -AcceptInitialState
+& C:\tcdc-baseline\ad-harden.ps1 -AcceptInitialState
 Get-Content C:\tcdc-baseline\drift.log -Tail 30
 Get-ScheduledTaskInfo -TaskName TCDC-Watch
 ```
 
 The Windows watcher runs as SYSTEM every two minutes. It compares administrator SIDs, service configuration, exported scheduled-task definitions, loaded-user Run/RunOnce keys, and monitor-module hashes. AD group additions/removals and collection failures are reported. Unloaded user hives are outside this coverage. An attacker who disables the watcher can prevent its own alerts: check task/timer health independently.
 
-`boot.sh` and `boot.ps1` remain download helpers. Set `TCDC_REF` (Linux) or `$Ref` (PowerShell) to a reviewed SHA and fetch the bootstrap at that **same SHA**. They default to `main` for compatibility; a local pinned checkout is the documented deployment path. Windows uses native PowerShell script invocation, with no `powershell.exe -File` array boundary.
+`boot.sh` and `boot.ps1` remain download helpers. Set `TCDC_REF` (Linux) or `$Ref` (PowerShell) to a reviewed SHA and fetch the bootstrap at that **same SHA**. They reject missing revisions, branch names, and tags; supply a full 40-character reviewed commit SHA. A local pinned checkout is the preferred deployment path. Windows uses native PowerShell script invocation, with no `powershell.exe -File` array boundary.
 
 ## Review accounts by identity
 

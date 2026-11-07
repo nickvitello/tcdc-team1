@@ -24,3 +24,9 @@ CI status for each commit is authoritative; inspect its run before deployment. F
 - Account census totals were removed in favor of identity-based review against the packet; built-in/staff accounts make simple totals misleading.
 - Host watcher webhooks were removed. Watchtower's optional alert webhook remains off by default and requires staff permission for data export.
 - Vault `sync` is manual attestation. Password prompting, storage, and service-credential updates do not perform a remote reset or scoreboard update.
+
+## Public-source follow-up
+
+The follow-up adds immutable bootstrap revision requirements, explicit first-capture acceptance, independent scheduler/module health checks, and the readiness procedure. The newly contributed Chronolock rotator is hardened against unvalidated CLI usernames, unknown SSH host keys, mixed sudo/command stdin, corrupt or partial journals, and falsely reporting uncertain rotations as unchanged. It now rotates one account per verified dashboard acknowledgment.
+
+Local coverage includes 29 unittest cases plus eight retained regression checks. CI adds a loopback-only SSH server and disposable accounts to test real sudo/password changes and fresh authentication. Host-key trust remains operator-supplied; a hash change does not establish application/scorer health. No competition credentials or hosts are used.

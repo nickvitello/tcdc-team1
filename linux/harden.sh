@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Local audit, private baseline, and drift watcher. No automatic SSH/firewall/account edits.
-# Usage: sudo bash harden.sh <boxname> [--rebaseline]
+# Usage: sudo bash harden.sh <boxname> [--accept-initial-state] [--rebaseline]
 set -euo pipefail
 umask 077
 BOX="${1:-$(hostname)}"
 [[ "$BOX" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'Invalid box name'; exit 2; }
-REBASELINE=0
+REBASELINE=0; ACCEPT_INITIAL=0
 [ $# -eq 0 ] || shift
 while [ $# -gt 0 ]; do
-  case "$1" in --rebaseline) REBASELINE=1;; *) echo "Unknown option: $1"; exit 2;; esac
+  case "$1" in --rebaseline) REBASELINE=1;; --accept-initial-state) ACCEPT_INITIAL=1;; *) echo "Unknown option: $1"; exit 2;; esac
   shift
 done
 [ "$(id -u)" -eq 0 ] || { echo 'Run as root'; exit 2; }
@@ -28,6 +28,10 @@ FIRST=0
 if [ ! -e "$BK/integrity.json" ]; then
   if [ -e "$BK/baseline.sha256" ] && [ "$REBASELINE" -eq 0 ]; then
     log 'OLD baseline: accepted evidence preserved. Review changes, then use --rebaseline. Nothing installed.'
+    exit 2
+  fi
+  if [ "$ACCEPT_INITIAL" -eq 0 ] && [ "$REBASELINE" -eq 0 ]; then
+    log 'First capture requires account/persistence review; see readiness.md, then --accept-initial-state. Nothing installed.'
     exit 2
   fi
   FIRST=1
@@ -55,7 +59,7 @@ log 'Keys, sudoers, cron, SSH configuration, units, symlinks, and watcher files 
 install -d -m755 /usr/local/lib/tcdc
 install -m700 "$SELFDIR/baseline.py" /usr/local/lib/tcdc/baseline.py
 install -m700 "$SELFDIR/watch-agent.sh" /usr/local/sbin/tcdc-watch
-printf '[Unit]\nDescription=TCDC local drift watch\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/tcdc-watch %s\n' "$BOX" > /etc/systemd/system/tcdc-watch.service
+printf '[Unit]\nDescription=TCDC local drift watch\n[Service]\nType=oneshot\nTimeoutStartSec=45\nExecStart=/usr/local/sbin/tcdc-watch %s\n' "$BOX" > /etc/systemd/system/tcdc-watch.service
 printf '[Unit]\nDescription=TCDC drift watch 60s\n[Timer]\nOnBootSec=30\nOnUnitActiveSec=60\n[Install]\nWantedBy=timers.target\n' > /etc/systemd/system/tcdc-watch.timer
 # Install the enablement symlink before capture; do not run the watcher until capture completes.
 systemctl daemon-reload

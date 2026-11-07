@@ -15,6 +15,10 @@ jobs:
       - run: bash -n boot.sh linux/harden.sh linux/watch-agent.sh tests/linux-install.sh
       - name: Disposable Linux install and systemd smoke test
         run: sudo --preserve-env=GITHUB_ACTIONS bash tests/linux-install.sh
+      - name: Install SSH test dependency
+        run: python -m pip install 'paramiko>=3,<5'
+      - name: Disposable loopback SSH and sudo rotation test
+        run: python tests/rotation-ssh-smoke.py
   windows:
     runs-on: windows-latest
     steps:
