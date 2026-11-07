@@ -79,15 +79,21 @@ else
 fi
 
 # 2. authorized_keys audit (backup, do NOT auto-delete — review first)
+# R8: blackteam/whiteteam (and root) keys are PROTECTED. We never clear them and we flag them
+# so an operator following the clear-hint below can't accidentally cut competition-staff access.
 log "[2] authorized_keys audit"
 getent passwd | awk -F: '$3>=0{print $1":"$6}' | while IFS=: read -r u home; do
   ak="$home/.ssh/authorized_keys"
   if [ -f "$ak" ] && [ -s "$ak" ]; then
     cp -a "$ak" "$BK/authkeys.$u.$TS" 2>/dev/null
-    log "    $u: $(grep -c . "$ak") key(s)  (backup: $BK/authkeys.$u.$TS)"
+    case " $PROTECTED_USERS " in
+      *" $u "*) log "    $u: $(grep -c . "$ak") key(s)  (PROTECTED - R8: DO NOT CLEAR; backup: $BK/authkeys.$u.$TS)" ;;
+      *)        log "    $u: $(grep -c . "$ak") key(s)  (backup: $BK/authkeys.$u.$TS)" ;;
+    esac
   fi
 done
-log "    -> clear after review: > ~USER/.ssh/authorized_keys"
+log "    -> clear ONLY non-protected users after review: > ~USER/.ssh/authorized_keys"
+log "    -> NEVER clear: $PROTECTED_USERS (R8)"
 
 # 3. Privilege audit (report)
 log "[3] privilege audit"
@@ -123,7 +129,11 @@ if [ -f "$SSHD" ]; then
     SSHD_PRECLEAN=1   # no baseline entry yet (first run): our post-edit state is the baseline
   fi
   set_sshd(){ grep -qiE "^\s*$1\b" "$SSHD" && sed -i "s|^\s*$1.*|$1 $2|I" "$SSHD" || echo "$1 $2" >> "$SSHD"; }
-  set_sshd PermitRootLogin prohibit-password
+  # R8 / access-safety: do NOT auto-change PermitRootLogin. If blackteam/whiteteam or a scored
+  # check logs in as root by PASSWORD, forcing prohibit-password silently cuts them off. REPORT
+  # the current value only; harden root login by hand after confirming nobody relies on it.
+  _rl="$(grep -iE '^\s*PermitRootLogin' "$SSHD" 2>/dev/null | tail -1 | awk '{print $2}')"
+  log "    PermitRootLogin currently: ${_rl:-(unset = default 'prohibit-password' on modern sshd)} - NOT changed (review manually)"
   set_sshd X11Forwarding no
   set_sshd PermitEmptyPasswords no
   set_sshd MaxAuthTries 4

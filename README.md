@@ -13,7 +13,7 @@ Scoring is 80% uptime + 20% injects, so everything here serves **keep-services-u
 | `boot.sh` + `linux/` | each Linux box | baseline, audit keys/sudo/services, harden sshd, install drift watcher |
 | `boot.ps1` + `windows/` | each Windows box | baseline admins/tasks/runkeys, audit, enable logging, firewall, drift watcher |
 | `windows/ad-harden.ps1` | the DC only | surgical AD audit (SPNs, admin groups); `-Apply` for SMBv1-off + audit |
-| `watchtower/monitor.py` | your laptop (over VPN) | poll all 8 services q15s, live dashboard, Discord alert, password vault |
+| `watchtower/monitor.py` | your laptop (over VPN) | poll 8 boxes q15s (7 scored + OPNsense reach-only), live dashboard, Discord alert, password vault |
 | `watchtower/vault.py` | your laptop | the ONE funnel for password changes (keeps /team/passwords in sync) |
 | `firewall-opnsense.md` | network lead | OPNsense playbook (no script — it's GUI) |
 
@@ -75,7 +75,13 @@ new Run-key autoruns, and listeners on common C2 ports (4444/5555/9001/1337/3133
 Metasploit/Sliver footprint. Alerts go to a LOCAL log (`/root/tcdc-baseline/drift.log`, `C:\tcdc-baseline\drift.log`). A `TCDC_WEBHOOK` hook exists but is OFF and NOT recommended: enabling it exports host-derived data (paths, account/service names, listeners) off-box, which R23 does not exempt. Do not enable without explicit staff approval.
 
 ## Rules compliance
-- Scoped to our 8 boxes only (R6). No attacks on competition infra / test box (R7/R9).
+- Scoped to our 9 topology boxes only (R6): 7 scored services (ns1-dns, ipcam-http, ftp-archive,
+  artifactorium, ssh-wkstn, ad-dc, mqtt) + OPNsense firewall + the jumpbox/gateway (both unscored,
+  defend-only — the jumpbox is ours alone; outsiders cannot address it). No attacks on competition
+  infra / test box (R7/R9).
+- R8: NEVER change, disable, or delete blackteam/whiteteam (or root). Scripts here report+back up
+  only; they never delete users, and the authorized_keys clear-hint explicitly excludes protected
+  users. Firewall rules are port-based, never source-blocking the jumpbox/teams.
 - No DoS/ARP spoof (R19). Tools report to a LOCAL log only; off-box webhook OFF by default (R23).
 - Tested in good faith pre-event on local VMs (R24). Free + public (R20). No AI at runtime (R21).
 

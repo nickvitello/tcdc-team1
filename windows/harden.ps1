@@ -157,7 +157,9 @@ if($ScoredPorts.Count -eq 0 -and $ScoredUdpPorts.Count -eq 0){
       Log "    firewall ENABLED (allow rules verified first)."
       if($EnableDefaultDeny){
         Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction Block -DefaultOutboundAction Allow -ErrorAction SilentlyContinue
-        Log "    DEFAULT-DENY inbound ENABLED. VALIDATE scored service + RDP/WinRM externally NOW."
+        Log "    DEFAULT-DENY inbound ENABLED. VALIDATE NOW (externally): scored service, RDP/WinRM,"
+        Log "    AND that white/black team + the jumpbox/checker can still reach this box (R8)."
+        Log "    Default-deny is port-based (mgmt=$($MgmtPorts -join ',')); it blocks any other inbound port."
       }
       Log "    if anything broke: netsh advfirewall import `"$BK\firewall-$ts.wfw`""
     } else {
