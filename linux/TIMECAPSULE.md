@@ -29,7 +29,10 @@ When PasswordRotate (`rotate_pass/`) rotates `washington`, keep it the same on e
 python3 rotate.py rotate --users washington --same-across-boxes
 ```
 
-Then rotate everyone else per box as usual. To skip the prompt each run, set
+Then rotate the others without touching washington again:
+`--users kennedy,teddy,lincoln,ross`, then `--users employees` (not `admins` or `all`).
+
+To skip the prompt each run, set
 `export FLEET_PASS='<washington password>'`.
 
 ## Competition day
@@ -75,7 +78,10 @@ new sudoer or a new SSH key, fix it with `userdel`, `visudo` or by editing
 ./fleet.sh aide check                            # what changed since; 'aide accept' after reviewing your own changes
 ./fleet.sh run "debsums -c"                      # files that don't match their package (replaced binaries)
 ./fleet.sh run "lynis audit system --quick"      # needs lynis installed
-./fleet.sh run "etckeeper commit 'checkpoint'"   # needs etckeeper installed
+./fleet.sh etckeeper install                     # git history of /etc (needs apt); no scheduled jobs
+./fleet.sh etckeeper commit hardened             # label the current /etc
+./fleet.sh etckeeper diff hardened               # an independent second view of /etc changes
+./fleet.sh etckeeper restore <box> hardened /etc/ssh/sshd_config   # independent second restore path
 ./fleet.sh run "find /var/www -name '*.php' -newer /etc/hostname"
 ```
 

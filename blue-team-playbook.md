@@ -8,7 +8,7 @@ elsewhere; this links to it rather than repeating it:
 | need | doc |
 |---|---|
 | harden/audit scripts, Watchtower, password vault and reset commands | [README.md](README.md) |
-| snapshots, diffs, rollback, `fleet.sh` | [linux/TIMECAPSULE.md](linux/TIMECAPSULE.md) |
+| snapshots, diffs, rollback, `fleet.sh`, AIDE, etckeeper | [linux/TIMECAPSULE.md](linux/TIMECAPSULE.md) |
 | Linux password rotation | [rotate_pass/README.md](rotate_pass/README.md) |
 | agentless Wazuh setup | [wazuh-agentless/README.md](wazuh-agentless/README.md) |
 | firewall changes | [firewall-opnsense.md](firewall-opnsense.md), [firewall-windows.md](firewall-windows.md) |
@@ -60,8 +60,12 @@ Rival teams know every default password, so speed matters.
    on the jumpbox. Windows: run `windows/harden.ps1` (see README) for its
    baseline.
 2. **Rotate passwords**, admins first:
-   - Linux: `python3 rotate.py rotate --users washington --same-across-boxes`,
-     then `--users admins`, then `--users employees`
+   - Linux, in `rotate_pass/`, in this order:
+     `python3 rotate.py rotate --users washington --same-across-boxes`, then
+     `--users kennedy,teddy,lincoln,ross`, then `--users employees`. Never use
+     `--users admins` or `all` after the first step: they would re-rotate
+     washington with a different password per box, and `fleet.sh` and Wazuh
+     need it identical everywhere.
    - Windows and AD: commands in README's reset table
    - OPNsense: GUI root/admin password
 
@@ -72,12 +76,24 @@ Rival teams know every default password, so speed matters.
 
 ### 08:15-09:00: hunt and harden
 Work the first-pass lists in section 4 (Linux) and section 5 (Windows), one
-change at a time. When done: `./fleet.sh snap hardened`, `./fleet.sh pull`, and
-start Wazuh (section 6).
+change at a time. When done, record the known-good state four ways:
+- `./fleet.sh snap hardened` then `./fleet.sh pull` (timecapsule)
+- `./fleet.sh etckeeper install` then `./fleet.sh etckeeper commit hardened`
+  (git history of `/etc`)
+- `./fleet.sh aide install` then `./fleet.sh aide init` (AIDE file baseline)
+- a store snapshot of the most critical boxes, if the team decides to spend on
+  it (section 7)
+
+etckeeper and AIDE need `apt` access on the boxes; if `apt` fails, skip them,
+since timecapsule covers the same ground. Then start Wazuh (section 6).
 
 ### Steady state (09:00 onward)
 Every 30 minutes, each owner runs:
 - `./fleet.sh diff hardened now` (Linux A runs it for all Linux boxes)
+- `./fleet.sh etckeeper diff hardened`: a second, independent view of `/etc`
+- `./fleet.sh aide check` every hour or so. It's slower, but hashes far more
+  files. After reviewing a change you made on purpose, run `./fleet.sh aide accept`
+  and `./fleet.sh etckeeper commit <new-label>`.
 - a quick Windows check: section 5's persistence and event commands
 - a scoreboard look: anything red gets section 7, immediately
 
@@ -94,6 +110,7 @@ resume.
 ### First pass on every box (about 5 minutes)
 ```
 ss -tulpn                                  # what's listening, and which program
+passwd -S root                             # L = locked (good); P or NP = lock it: passwd -l root
 awk -F: '$3==0' /etc/passwd                # any UID 0 besides root = backdoor
 cat /etc/sudoers /etc/sudoers.d/*;  getent group sudo adm
 cat /home/*/.ssh/authorized_keys /root/.ssh/authorized_keys
@@ -201,34 +218,59 @@ Get-SmbServerConfiguration | Select EnableSMB1Protocol,RequireSecuritySignature
 Set up per wazuh-agentless/README.md. Run it on the jumpbox, or on a laptop only
 with Black Team's OK (R23).
 
+Each box gets 8 checks on their own schedules: services every minute; network
+and activity every 2 minutes; accounts, persistence and logs every 5 minutes;
+packages and file hashes every 15 minutes. Run it with `-AsRoot` so it can see
+sudoers, password changes, every user's SSH keys and the system logs.
+
 **Daily rhythm.** Start it at 08:15, after passwords are rotated and you've run
 `register.ps1`. Stop it at 11:55 and 15:55; start it again at 13:00 (R10).
-After any rotation of the account it logs in as, run `register.ps1` again.
+After any rotation of the account it logs in as, re-run `setup.ps1 -AsRoot` and
+`register.ps1`, or every check reports "incorrect password".
 
 **Triage.** Open Threat Hunting > Events and search `agentless`. Each alert names
 the box and shows the changed lines.
 
 | alert shows | likely meaning | do |
 |---|---|---|
+| `==SERVICES==` shows a service not `running`, or `==LOCAL-PORTS==` shows a scored port `closed` | service down | section 7 now: `systemctl status`, restore config, restart |
+| sudo "incorrect password attempt" on every check | stored sudo password is stale | re-run `setup.ps1 -AsRoot` and `register.ps1` |
 | new line under `==UID0==` | backdoor root account | `userdel`, then hunt for how it got there |
 | new line in `==USERS==` | new account | if not yours: remove, check sudo and keys |
+| `==SUDOERS==` change | someone granted sudo | remove the line or file (`visudo -c` after) |
+| `==PASSWORD-CHANGES==` change | a password changed | ours? fine (and on the dashboard?). Not ours: rotate it now and update the dashboard |
+| `==SSH-KEYS==` change | key added to an account | remove it unless a teammate added it |
+| `==SSHD==` change | SSH settings weakened | restore `sshd_config` (timecapsule or etckeeper), `sshd -t`, reload |
+| new `==OUTBOUND==` address | the box is connecting out: possible C2 | `ss -tnp` to find the program, kill it, remove its persistence |
+| new `==LOGGED-IN==` user or source | someone is on the box | not a teammate? kill the session (`pkill -KILL -t <tty>`), rotate that password |
+| new `==TMP-EXECUTABLES==` file | dropped payload | check what runs it (`ps`, cron, timers), then delete it |
+| new `==WEB-SCRIPTS==` file | possible webshell | read it; remove it if it isn't part of the site |
+| new `==UNIT-FILES==` hash or `==SERVICES-ENABLED==` entry | systemd persistence | `systemctl cat <unit>`, disable it, remove it |
+| `==PAM==` change | password-stealing module | restore from timecapsule or etckeeper; tell Black Team |
+| `==KERNEL-MODULES==` change | possible rootkit | escalate to the team; snapshot revert may be needed |
+| `==CAPABILITIES==` change | privilege escalation | `setcap -r <file>` unless it's a package default |
+| `packages` change | new tool installed (netcat, nmap, gcc) | ours? fine. Not ours: hunt for what it was used for |
+| `logs` alerts (SSH brute force, sudo, new user) | Wazuh's own rules fired on system logs | check the source IP and account; rotate if anything got in |
 | new `==LISTENERS==` port | backdoor or bind shell | `ss -tulpn` on the box, kill and remove the program |
 | new `==CRON==` or `==TIMERS==` entry | persistence | remove it; check `fleet.sh diff` for its payload |
 | new `==SUID==` file | privilege escalation backdoor | `chmod u-s`, then remove it if it's not a package file |
 | `==PRELOAD==` not empty | library injection | empty `/etc/ld.so.preload`, find the library |
 | `==PROCESSES==` change | often noise (someone ran a program) | glance; act only if it's unfamiliar and stays |
-| integrity: file changed | config edit or replaced binary | `fleet.sh diff hardened now`, then restore (section 7) |
+| integrity: file changed | config edit or replaced binary | `fleet.sh diff hardened now` or `fleet.sh aide check`, then restore (section 7) |
 
 If an alert is our own change, note it so nobody chases it.
 
 ## 7. When something breaks or gets popped
 
-1. **Detect:** the scoreboard is red, a diff shows a change, or Wazuh alerts.
+1. **Detect:** the scoreboard is red, a diff or AIDE check shows a change, or
+   Wazuh alerts.
 2. **Restore service first, investigate second:**
    - service down: `systemctl status <svc>` and `journalctl -u <svc> -n 50`;
      on Windows `Get-Service`.
    - config tampered with: `./fleet.sh restore <box> hardened <path>`, then
-     syntax-check and reload.
+     syntax-check and reload. For files under `/etc`, an independent second
+     option is `./fleet.sh etckeeper restore <box> hardened <path>`; use it if
+     the timecapsule copy is missing, or looks wrong.
    - account files can't be restored (by design); fix accounts with
      `userdel`, `usermod` and `gpasswd -d`.
 3. **Evict:**
@@ -239,8 +281,31 @@ If an alert is our own change, note it so nobody chases it.
    `fleet.sh diff hardened now`.
 5. **Record it** in team chat: time, box, what happened, what you changed. Some
    injects ask for exactly this.
-6. **Last resort:** a store snapshot revert, which costs currency. Decide as a
-   team.
+6. **Last resort:** a store snapshot revert (below).
+
+### Store snapshots and reverts
+The store at https://dash.playtcdc.org/team/store sells box snapshots and
+reverts. Currency is fixed and can't be earned back, so plan before spending.
+
+- **What it is:** a hypervisor-level copy of the whole VM, outside anything red
+  team can reach from inside the box. It's the most independent layer we have.
+- **When to buy:** right after hardening (once `snap hardened` is taken), for the
+  boxes that would hurt most to rebuild. Suggested order: **ad**, then
+  **artifactorium**, then whatever has needed the most repair by midday.
+- **When to revert:** only when the box is unrecoverable by other means:
+  timecapsule and etckeeper restores failed, or the box won't boot or accept
+  logins. Revert costs downtime too.
+- **After a revert, everything since the snapshot is undone**, passwords
+  included:
+  1. Re-enter that box's passwords on the dashboard as they were at snapshot time
+     (the password master list's history has them). PasswordRotate's
+     `state.json` and Sheet will also be ahead of the box, so note it in the
+     Sheet.
+  2. Re-run `register.ps1` for that box if Wazuh uses a rotated password.
+  3. Take fresh baselines: `snap`, `etckeeper commit` and `aide accept` with a new
+     label, and re-pull.
+  4. Re-check for anything red team planted before the snapshot was taken.
+- **Store disputes go to Black Team.**
 
 ## 8. Passwords: one master list
 

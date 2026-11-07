@@ -100,14 +100,14 @@ snap(){
   # file fingerprints (what files exist + their content hash)
   for p in $HASH_PATHS; do
     [ -e "$p" ] && find "$p" -xdev -type f -size -50M 2>/dev/null
-  done | grep -v '^/etc/.*-$' | sort -u \
+  done | grep -v -e '^/etc/.*-$' -e '^/etc/\.git/' -e '^/etc/\.etckeeper$' | sort -u \
     | xargs -r -d '\n' sha256sum 2>/dev/null | awk '{print $2, $1}' | sort > hashes.txt
 
   # restorable config backup
   local existing=""
   for p in $BACKUP_PATHS; do [ -e "$p" ] && existing="$existing $p"; done
   # shellcheck disable=SC2086
-  tar czf backup.tgz --ignore-failed-read $existing 2>/dev/null
+  tar czf backup.tgz --ignore-failed-read --exclude=etc/.git $existing 2>/dev/null
   chmod 600 backup.tgz
 
   echo "[timecapsule] done: $(ls | wc -l) files, $(wc -l < hashes.txt) hashed, backup $(du -h backup.tgz | cut -f1)"

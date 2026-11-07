@@ -62,7 +62,9 @@ FULL = p+u+g+s+m+c+ftype+l+sha256
 # --- excluded ---
 # organizer tooling: not ours to watch or touch (R7)
 !/var/ossec
-# our own tool data
+# our own tool data (etckeeper's history lives in /etc/.git)
+!/etc/\.git
+!/etc/\.etckeeper$
 !/root/aide
 !/root/timecapsule
 !/root/tcdc-baseline
@@ -85,7 +87,7 @@ case "${1:-}" in
     fi
     # the package enables a daily check timer; we want no scheduled jobs on the box
     systemctl disable --now dailyaidecheck.timer >/dev/null 2>&1 || true
-    echo "[aide] installed $(aide --version 2>&1 | head -1); daily timer: $(systemctl is-enabled dailyaidecheck.timer 2>/dev/null || echo none)"
+    echo "[aide] installed $(aide --version 2>&1 | head -1); daily timer: $(systemctl is-enabled dailyaidecheck.timer 2>/dev/null; true)"
     ;;
   init)
     need_aide; write_conf

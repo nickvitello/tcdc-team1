@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Run after setup.ps1, and again every time that account's password is rotated
-  (PasswordRotate, rotate_pass/), or the checks start failing. The password is typed hidden and handed
+  (Chronolock), or the checks start failing. The password is typed hidden and handed
   to the container on stdin, so it never shows up in a command line.
 
 .EXAMPLE
@@ -16,6 +16,7 @@ param(
   [Parameter(Mandatory)][string]$User,
   [string]$WorkDir = "D:\wazuh-agentless",
   [string[]]$Boxes,
+  [hashtable]$Hosts,
   [switch]$PerBoxPasswords
 )
 $ErrorActionPreference = "Stop"
@@ -23,13 +24,17 @@ if ($User -notmatch '^[a-z_][a-z0-9_.-]*$') { throw "User '$User' doesn't look l
 $SN = [IO.Path]::Combine($WorkDir, "wazuh-docker", "single-node")
 if (-not (Test-Path (Join-Path $SN "docker-compose.yml"))) { throw "Run setup.ps1 first (no Wazuh in $WorkDir)" }
 
-$net = 100 + $Team
-$hosts = [ordered]@{
-  "ns1"             = "10.$net.10.53"
-  "ftp-archive"     = "10.$net.10.21"
-  "artifactorium"   = "10.$net.10.80"
-  "ssh-workstation" = "10.$net.10.22"
-  "ipcam"           = "10.150.0.$Team"
+if ($Hosts) {
+  $hosts = [ordered]@{}; foreach ($k in ($Hosts.Keys | Sort-Object)) { $hosts[$k] = [string]$Hosts[$k] }
+} else {
+  $net = 100 + $Team
+  $hosts = [ordered]@{
+    "ns1"             = "10.$net.10.53"
+    "ftp-archive"     = "10.$net.10.21"
+    "artifactorium"   = "10.$net.10.80"
+    "ssh-workstation" = "10.$net.10.22"
+    "ipcam"           = "10.150.0.$Team"
+  }
 }
 if ($Boxes) {
   # accept "ns1,ipcam" as one string too (e.g. when launched with powershell -File)

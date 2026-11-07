@@ -8,6 +8,8 @@
 #   TEAM=5 ./fleet.sh pull                         copy every box's snapshots to ./capsules/
 #   TEAM=5 ./fleet.sh restore <box> <label> <path> [path...]   roll files back on ONE box
 #   TEAM=5 ./fleet.sh aide <install|init|check|accept>   AIDE file integrity (see aide.sh)
+#   TEAM=5 ./fleet.sh etckeeper <install|list|commit <label>|diff <label>>   git history of /etc
+#   TEAM=5 ./fleet.sh etckeeper restore <box> <label> <path> [path...]       roll /etc files back on ONE box
 #   TEAM=5 ./fleet.sh run "<command>"              run a command as root on every box
 #                                                  e.g. "debsums -c", "lynis audit system --quick"
 # Options (environment variables):
@@ -22,6 +24,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TC="$HERE/timecapsule.sh"
 AIDE_SH="$HERE/aide.sh"
+ETCK_SH="$HERE/etckeeper.sh"
 ADMIN_USER="${ADMIN_USER:-washington}"
 OUT="$HERE/capsules"
 
@@ -117,6 +120,7 @@ do_list(){ tc_remote "$1" list; }
 do_diff(){ tc_remote "$1" diff "$3" "$4"; }
 do_run(){  root_remote "$1" "$3"; }
 do_aide(){ script_remote "$1" "$AIDE_SH" "$3"; }
+do_etck(){ local t="$1"; shift 2; script_remote "$t" "$ETCK_SH" "$@"; }
 do_pull(){
   local t="$1" name="$2" f
   mkdir -p "$OUT" && chmod 700 "$OUT"
@@ -138,6 +142,20 @@ case "$cmd" in
   aide)    [[ "${1:-}" =~ ^(install|init|check|accept)$ ]] || die "usage: fleet.sh aide <install|init|check|accept>"
            [ -f "$AIDE_SH" ] || die "aide.sh must sit next to fleet.sh"
            each do_aide "$1" ;;
+  etckeeper)
+    [ -f "$ETCK_SH" ] || die "etckeeper.sh must sit next to fleet.sh"
+    case "${1:-}" in
+      install|list)  each do_etck "$1" ;;
+      commit|diff)   [ $# -eq 2 ] || die "usage: fleet.sh etckeeper $1 <label>"; each do_etck "$1" "$2" ;;
+      restore)
+        [ $# -ge 4 ] || die "usage: fleet.sh etckeeper restore <box> <label> <path> [path...]"
+        box="$2"; idx=""; for i in "${!NAMES[@]}"; do [ "${NAMES[$i]}" = "$box" ] && idx=$i; done
+        [ -n "$idx" ] || die "unknown box '$box' (known: ${NAMES[*]})"
+        echo "etckeeper restore on $box from '$3': ${*:4}"
+        read -rp "Type yes to proceed: " ok; [ "$ok" = "yes" ] || die "aborted"
+        script_remote "${TARGETS[$idx]}" "$ETCK_SH" restore "$3" "${@:4}" ;;
+      *) die "usage: fleet.sh etckeeper <install|list|commit <label>|diff <label>|restore <box> <label> <path>...>" ;;
+    esac ;;
   pull)    each do_pull ;;
   restore)
     [ $# -ge 3 ] || die "usage: fleet.sh restore <box> <label> <path> [path...]"
@@ -147,5 +165,5 @@ case "$cmd" in
     echo "Restore on $box from '$1': ${*:2}"
     read -rp "Type yes to proceed: " ok; [ "$ok" = "yes" ] || die "aborted"
     tc_remote "${TARGETS[$idx]}" restore "$@" ;;
-  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
