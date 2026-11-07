@@ -100,11 +100,11 @@ python3 watchtower/vault.py svc ftp-archive <user>
 
 ## Packet scope and validation
 
-Source: **TCDC SMC F26 Official Packet**, local Nov 3 copy, pp. 9–16. It lists eight topology boxes (seven scored services and OPNsense) and a protected access jumpbox. Official Discord updates have equal authority; reconcile any announced changes with Black Team before acting. No later nine-box update was supplied for this audit.
+Source: **TCDC SMC F26 Official Packet**, local Nov 3 copy, pp. 9–16. R6 and the service table list eight boxes (seven scored services and OPNsense); the p. 14 diagram also shows the access jumpbox at both `10.99.X.2` and `10.(100+X).40.22`. R16 protects it against use for attack infrastructure. Official Discord updates have equal authority; reconcile any announced changes with Black Team before acting. No later nine-box update was supplied for this audit.
 
 - R6–R9: only the listed boxes; staff users, Wazuh/auditd, guest tools, dashboards and other infrastructure are out of scope for attack.
 - R10: hands-on periods only, subject to staff updates.
 - R11–R19: reversible purple teaming; no lockouts, destructive loss, infrastructure impersonation, DoS, or ARP spoofing. No C2 on the jumpbox.
 - R20–R25: public custom tools submitted through Tool Links; free tools, no AI use during competition; no artifact/data export except screenshots/passwords; test outside competition infrastructure; no personal accounts on infrastructure.
 
-CI runs offline Python/Bash fixtures on Ubuntu and Python plus PowerShell 5.1 parsing/helper/bootstrap fixtures on Windows. It does not test a full Windows 11/DC/OPNsense deployment or the competition network. See [VALIDATION.md](VALIDATION.md) for checks and limits. Submit the public repository link through Tool Links before use; publication alone is not submission or approval.
+CI runs Python/Bash fixtures on Ubuntu and Python plus PowerShell 5.1 parsing/helper/bootstrap fixtures on Windows, followed by actual installer and scheduled-watcher smoke tests on those disposable runners. It does not test a full Windows 11/DC/OPNsense deployment or the competition network. See [VALIDATION.md](VALIDATION.md) for checks and limits. Submit the public repository link through Tool Links before use; publication alone is not submission or approval.

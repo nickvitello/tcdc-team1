@@ -27,6 +27,10 @@ function Get-TcdcTasks {
     [pscustomobject]@{ Id=$task.TaskPath+$task.TaskName; Definition=$definition.OuterXml }
   }
 }
+function Get-TcdcRunValue([string]$Key,[string]$Name){
+  # Preserve REG_EXPAND_SZ text; operator and SYSTEM environments differ.
+  (Get-Item $Key -ErrorAction Stop).GetValue($Name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+}
 function Get-TcdcRunKeys {
   $keys = @('HKLM:\Software\Microsoft\Windows\CurrentVersion\Run',
             'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce',
@@ -39,7 +43,7 @@ function Get-TcdcRunKeys {
   foreach($key in ($keys | Sort-Object -Unique)){
     if(Test-Path $key){
       foreach($name in ((Get-Item $key -ErrorAction Stop).Property | Sort-Object)){
-        [pscustomobject]@{ Id="$key :: $name"; Value=(Get-ItemPropertyValue $key $name -ErrorAction Stop) }
+        [pscustomobject]@{ Id="$key :: $name"; Value=(Get-TcdcRunValue $key $name) }
       }
     }
   }

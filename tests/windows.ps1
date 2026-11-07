@@ -14,6 +14,12 @@ $root=Join-Path $env:TEMP ('tcdc-test-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $root | Out-Null
 try {
   foreach($name in 'watch-agent.ps1','common.ps1','ad-harden.ps1'){ Set-Content (Join-Path $root $name) '# fixture' }
+  $registryFixture='HKCU:\Software\TcdcCi-'+[guid]::NewGuid().ToString('N')
+  try {
+    New-Item $registryFixture | Out-Null
+    New-ItemProperty $registryFixture -Name fixture -PropertyType ExpandString -Value '%USERPROFILE%\fixture' | Out-Null
+    Assert ((Get-TcdcRunValue $registryFixture 'fixture') -eq '%USERPROFILE%\fixture') 'Autorun expansion is stable across operator and SYSTEM contexts'
+  } finally { Remove-Item $registryFixture -Recurse -Force }
   # Exercise real Windows 5.1 enumeration read-only before replacing host cmdlets with fixtures.
   $live=Get-TcdcSnapshot $root
   Assert (@($live.Services).Count -gt 0) 'Real Windows service enumeration succeeds'

@@ -1,35 +1,27 @@
-# OPNsense 26.7 playbook (10.101.40.1) — network/firewall lead
+# OPNsense playbook — network lead
 
-NOT scored, but it gates every scored box. Do NOT lock yourself (or the checker) out.
+The packet lists OPNsense management at `10.(100+X).40.1`. It is unscored but routes scored services. Do not infer the actual management path from one address alone.
 
-## First 10 min
-1. Log in via jumpbox Chromium (https). Change the admin/root password → record in vault.
-2. System > Access > Users: audit accounts, disable anything not yours (keep blackteam/whiteteam — R8).
-3. Firewall > Rules: SCREENSHOT current rules first (rollback + evidence).
-4. Diagnostics > States: watch for weird established flows (C2 egress).
+## Inspect before changing
 
-## Rules (conservative — uptime first)
-- Keep scored service ports reachable from the checker subnet. Do NOT blanket-deny.
-- Block OUTBOUND to known C2 ports from server VLANs (4444,5555,8081,9001,1337,31337) — R18 lets
-  you block, but each rule names one dest+port; log hits.
-- Mgmt (SSH/GUI): R18 wants outside-subnet inbound blocks to apply to every source. BUT a blanket
-  "deny mgmt from all outside" can also block YOUR recovery path, and do not assume a jumpbox-hosted
-  browser (10.99.1.2, itself OUTSIDE the defended service subnets) is exempt: unless its traffic is
-  NAT'd/proxied to an allowed source, its packets arrive as an outside source and the deny drops them.
-  Existing GUI states can mask this until they expire, then you are locked out. Before you deploy that
-  deny:
-  1. Establish the ACTUAL packet source the firewall sees for your management traffic (Diagnostics >
-     States / packet capture), do not guess. Find out whether the jumpbox is routed or NAT'd.
-  2. Keep an independent fallback that the deny does NOT cut — OPNsense console (physical/hypervisor),
-     or a LAN/internal-interface management rule — and TEST it works first.
-  3. Apply the deny, then immediately confirm the GUI is still reachable by your intended path. If not,
-     roll back from the screenshot in step 3 above (or console) right away.
-  R18 compliance (does the block cover all sources) is a SEPARATE question from whether management
-  still works. A source-based allow for 10.99.1.2 is selective policy R18's internal-subnet exception
-  may not cover — get an explicit staff ruling before relying on it as compliant.
-- Leave ICMP to the test box alone; never touch competition infra (R7/R9).
+1. Use the approved jumpbox path. Record the current configuration locally and verify a usable configuration backup plus independent recovery access before changing rules.
+2. Inventory accounts and service dependencies. Never change blackteam/whiteteam; retain packet OS accounts. Do not disable unfamiliar accounts solely because they are unfamiliar.
+3. Inspect current firewall rules and states. Determine the interface and source address seen for a NEW management connection.
+4. Inspect service transactions and the official scoreboard before and after each proposed change.
 
-## Trap
-- R19: no DoS / no ARP spoofing. Firewall rules only, no active disruption of other teams.
-- A too-aggressive deny that breaks DNS/AD replication = self-inflicted uptime loss. Change one
-  rule, watch Watchtower 2 ticks, then the next.
+## Jumpbox source and recovery
+
+PDF p. 14 shows the jumpbox with **both `10.99.X.2` and `10.(100+X).40.22`**, the latter inside the management subnet. Its actual GUI traffic may use that internal interface; do not assume either that it arrives from the VPN address or that NAT makes it internal. Check the actual packet source/interface and test a fresh session. Existing states can hide an accidental lockout until they expire.
+
+The R6 text/scored-service table lists eight defended boxes, while the diagram also depicts this access jumpbox. R16 explicitly prohibits attack infrastructure on the jumpbox. Treat it as an access dependency; follow staff rulings for any broader defense scope. Do not change its policy or services based on this toolkit.
+
+Keep independently tested console or other allowed recovery access. If it is unavailable, obtain staff assistance before a change that could cut your only management path.
+
+## Packet R18 constraints
+
+- Rules between your four team subnets are allowed under the packet's internal-traffic exception.
+- An inbound block for outside sources must apply to **all source IPs**, not selected outside teams or staff ranges.
+- An outbound block to an outside destination must specify **one destination IP and one port**. A blanket outbound block of ports 4444/5555/etc. for every destination does not satisfy this condition. Port numbers alone do not establish malicious activity.
+- Preserve DNS, AD, MQTT, HTTP, FTP, SSH, management, staff, and scoring dependencies. No default-deny outbound, subnet-wide outbound blocks, DoS, or ARP spoofing.
+
+Apply one reviewed change, test new management connections and relevant service transactions, observe official scoring, and restore the prior configuration on failure. Watchtower provides supporting observations, not proof of scorer access or rules compliance. If scope or policy is unclear, R17 directs you to Black Team.
