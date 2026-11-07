@@ -53,11 +53,22 @@ function Snap-RunKeys($path){
   $out | Out-File $path
 }
 
+# robust local-admins enum (Get-LocalGroupMember throws Win32Internal on orphaned SIDs in PS5.1)
+function Get-AdminMembers {
+  try { return Get-LocalGroupMember -Group 'Administrators' -ErrorAction Stop | Select-Object Name,PrincipalSource }
+  catch {
+    net localgroup Administrators 2>$null |
+      Where-Object { $_ -and $_ -notmatch '^(Alias name|Comment|Members|-----|The command)' } |
+      ForEach-Object { [pscustomobject]@{ Name = $_.Trim(); PrincipalSource = 'net-fallback' } } |
+      Where-Object { $_.Name }
+  }
+}
+
 # 1. Baseline (accepted on first run; forensic-only on re-runs unless -Rebaseline)
 $firstRun = -not (Test-Path "$BK\services.base.csv")
 if($firstRun -or $Rebaseline){
   Log "[1] capturing accepted baseline -> $BK\*.base.*"
-  try { Get-LocalGroupMember -Group "Administrators" | Select-Object Name,PrincipalSource |
+  try { Get-AdminMembers |
         Export-Csv "$BK\admins.base.csv" -NoTypeInformation } catch { Log "  (not workgroup local-admins)" }
   Snap-Services "$BK\services.base.csv"
   Snap-Tasks "$BK\schtasks.base.csv"
@@ -65,7 +76,7 @@ if($firstRun -or $Rebaseline){
   Log "    baselined admins/services(+path)/schtasks(+actions)/runkeys(all hives)"
 } else {
   Log "[1] baseline EXISTS -> forensic snapshot only ($ts). Pass -Rebaseline to replace accepted baseline."
-  try { Get-LocalGroupMember -Group "Administrators" | Select-Object Name,PrincipalSource |
+  try { Get-AdminMembers |
         Export-Csv "$BK\admins.forensic-$ts.csv" -NoTypeInformation } catch {}
   Snap-Services "$BK\services.forensic-$ts.csv"
   Snap-Tasks "$BK\schtasks.forensic-$ts.csv"
@@ -74,7 +85,7 @@ if($firstRun -or $Rebaseline){
 
 # 2. Report local admins (backdoor accounts)
 Log "[2] local Administrators members:"
-try { Get-LocalGroupMember Administrators | ForEach-Object { Log ("    " + $_.Name) } } catch {}
+try { Get-AdminMembers | ForEach-Object { Log ("    " + $_.Name) } } catch {}
 
 # 3. Report non-standard scheduled tasks + Run keys (C2 persistence)
 Log "[3] scheduled tasks NOT under \Microsoft\ (review):"
